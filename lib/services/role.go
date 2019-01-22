@@ -1,5 +1,5 @@
 /*
-Copyright 2016 Gravitational, Inc.
+Copyright 2016-2019 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -2206,7 +2206,9 @@ func UnmarshalRole(data []byte, opts ...MarshalOption) (*RoleV3, error) {
 			return nil, trace.Wrap(err)
 		}
 
-		role.SetResourceID(cfg.ID)
+		if cfg.ID != 0 {
+			role.SetResourceID(cfg.ID)
+		}
 
 		return &role, nil
 	}
@@ -2245,8 +2247,24 @@ func (*TeleportRoleMarshaler) UnmarshalRole(bytes []byte, opts ...MarshalOption)
 }
 
 // MarshalRole marshalls role into JSON.
-func (*TeleportRoleMarshaler) MarshalRole(u Role, opts ...MarshalOption) ([]byte, error) {
-	return json.Marshal(u)
+func (*TeleportRoleMarshaler) MarshalRole(r Role, opts ...MarshalOption) ([]byte, error) {
+	cfg, err := collectOptions(opts)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	switch role := r.(type) {
+	case *RoleV3:
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *role
+			copy.SetResourceID(0)
+			role = &copy
+		}
+		return utils.FastMarshal(role)
+	default:
+		return nil, trace.BadParameter("unrecognized role version %T", r)
+	}
 }
 
 // SortedRoles sorts roles by name

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Gravitational, Inc.
+Copyright 2017-2019 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -260,12 +259,30 @@ func (t *TeleportStaticTokensMarshaler) Unmarshal(bytes []byte, opts ...MarshalO
 		return nil, trace.Wrap(err)
 	}
 
-	staticTokens.SetResourceID(cfg.ID)
+	if cfg.ID != 0 {
+		staticTokens.SetResourceID(cfg.ID)
+	}
 
 	return &staticTokens, nil
 }
 
 // Marshal marshals StaticTokens to JSON.
 func (t *TeleportStaticTokensMarshaler) Marshal(c StaticTokens, opts ...MarshalOption) ([]byte, error) {
-	return json.Marshal(c)
+	cfg, err := collectOptions(opts)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	switch resource := c.(type) {
+	case *StaticTokensV2:
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *resource
+			copy.SetResourceID(0)
+			resource = &copy
+		}
+		return utils.FastMarshal(resource)
+	default:
+		return nil, trace.BadParameter("unrecognized resource version %T", c)
+	}
 }

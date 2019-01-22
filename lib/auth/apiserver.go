@@ -1,5 +1,5 @@
 /*
-Copyright 2015 Gravitational, Inc.
+Copyright 2015-2019 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -171,6 +171,7 @@ func NewAPIServer(config *APIConfig) http.Handler {
 	srv.GET("/:version/configuration/name", srv.withAuth(srv.getClusterName))
 	srv.POST("/:version/configuration/name", srv.withAuth(srv.setClusterName))
 	srv.GET("/:version/configuration/static_tokens", srv.withAuth(srv.getStaticTokens))
+	srv.DELETE("/:version/configuration/static_tokens", srv.withAuth(srv.deleteStaticTokens))
 	srv.POST("/:version/configuration/static_tokens", srv.withAuth(srv.setStaticTokens))
 	srv.GET("/:version/authentication/preference", srv.withAuth(srv.getClusterAuthPreference))
 	srv.POST("/:version/authentication/preference", srv.withAuth(srv.setClusterAuthPreference))
@@ -417,7 +418,7 @@ func (s *APIServer) getAuthServers(auth ClientI, w http.ResponseWriter, r *http.
 func marshalServers(servers []services.Server, version string) (interface{}, error) {
 	items := make([]json.RawMessage, len(servers))
 	for i, server := range servers {
-		data, err := services.GetServerMarshaler().MarshalServer(server, services.WithVersion(version))
+		data, err := services.GetServerMarshaler().MarshalServer(server, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -458,7 +459,7 @@ func (s *APIServer) getReverseTunnels(auth ClientI, w http.ResponseWriter, r *ht
 	}
 	items := make([]json.RawMessage, len(reverseTunnels))
 	for i, tunnel := range reverseTunnels {
-		data, err := services.GetReverseTunnelMarshaler().MarshalReverseTunnel(tunnel, services.WithVersion(version))
+		data, err := services.GetReverseTunnelMarshaler().MarshalReverseTunnel(tunnel, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -496,7 +497,7 @@ func (s *APIServer) upsertTrustedCluster(auth ClientI, w http.ResponseWriter, r 
 		return nil, trace.Wrap(err)
 	}
 
-	return rawMessage(services.GetTrustedClusterMarshaler().Marshal(out, services.WithVersion(version)))
+	return rawMessage(services.GetTrustedClusterMarshaler().Marshal(out, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 func (s *APIServer) validateTrustedCluster(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
@@ -774,7 +775,7 @@ func (s *APIServer) getUser(auth ClientI, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.GetUserMarshaler().MarshalUser(user, services.WithVersion(version)))
+	return rawMessage(services.GetUserMarshaler().MarshalUser(user, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 func rawMessage(data []byte, err error) (interface{}, error) {
@@ -792,7 +793,7 @@ func (s *APIServer) getUsers(auth ClientI, w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]json.RawMessage, len(users))
 	for i, user := range users {
-		data, err := services.GetUserMarshaler().MarshalUser(user, services.WithVersion(version))
+		data, err := services.GetUserMarshaler().MarshalUser(user, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -981,7 +982,7 @@ func (s *APIServer) getCertAuthorities(auth ClientI, w http.ResponseWriter, r *h
 	}
 	items := make([]json.RawMessage, len(certs))
 	for i, cert := range certs {
-		data, err := services.GetCertAuthorityMarshaler().MarshalCertAuthority(cert, services.WithVersion(version))
+		data, err := services.GetCertAuthorityMarshaler().MarshalCertAuthority(cert, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -1003,7 +1004,7 @@ func (s *APIServer) getCertAuthority(auth ClientI, w http.ResponseWriter, r *htt
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.GetCertAuthorityMarshaler().MarshalCertAuthority(ca, services.WithVersion(version)))
+	return rawMessage(services.GetCertAuthorityMarshaler().MarshalCertAuthority(ca, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 func (s *APIServer) getDomainName(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
@@ -1588,7 +1589,7 @@ func (s *APIServer) getGithubConnectors(auth ClientI, w http.ResponseWriter, r *
 	}
 	items := make([]json.RawMessage, len(connectors))
 	for i, connector := range connectors {
-		bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
+		bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector, services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -1612,7 +1613,7 @@ func (s *APIServer) getGithubConnector(auth ClientI, w http.ResponseWriter, r *h
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.GetGithubConnectorMarshaler().Marshal(connector))
+	return rawMessage(services.GetGithubConnectorMarshaler().Marshal(connector, services.PreserveResourceID()))
 }
 
 /* deleteGithubConnector deletes the specified Github connector
@@ -1702,7 +1703,7 @@ func (s *APIServer) validateGithubAuthCallback(auth ClientI, w http.ResponseWrit
 	}
 	if response.Session != nil {
 		rawSession, err := services.GetWebSessionMarshaler().MarshalWebSession(
-			response.Session, services.WithVersion(version))
+			response.Session, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -1711,7 +1712,7 @@ func (s *APIServer) validateGithubAuthCallback(auth ClientI, w http.ResponseWrit
 	raw.HostSigners = make([]json.RawMessage, len(response.HostSigners))
 	for i, ca := range response.HostSigners {
 		data, err := services.GetCertAuthorityMarshaler().MarshalCertAuthority(
-			ca, services.WithVersion(version))
+			ca, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -2009,7 +2010,7 @@ func (s *APIServer) getRole(auth ClientI, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.GetRoleMarshaler().MarshalRole(role, services.WithVersion(version)))
+	return rawMessage(services.GetRoleMarshaler().MarshalRole(role, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 func (s *APIServer) getRoles(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
@@ -2019,7 +2020,7 @@ func (s *APIServer) getRoles(auth ClientI, w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]json.RawMessage, len(roles))
 	for i, role := range roles {
-		raw, err := services.GetRoleMarshaler().MarshalRole(role, services.WithVersion(version))
+		raw, err := services.GetRoleMarshaler().MarshalRole(role, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -2042,7 +2043,7 @@ func (s *APIServer) getClusterConfig(auth ClientI, w http.ResponseWriter, r *htt
 		return nil, trace.Wrap(err)
 	}
 
-	return rawMessage(services.GetClusterConfigMarshaler().Marshal(cc, services.WithVersion(version)))
+	return rawMessage(services.GetClusterConfigMarshaler().Marshal(cc, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 type setClusterConfigReq struct {
@@ -2076,7 +2077,7 @@ func (s *APIServer) getClusterName(auth ClientI, w http.ResponseWriter, r *http.
 		return nil, trace.Wrap(err)
 	}
 
-	return rawMessage(services.GetClusterNameMarshaler().Marshal(cn, services.WithVersion(version)))
+	return rawMessage(services.GetClusterNameMarshaler().Marshal(cn, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 type setClusterNameReq struct {
@@ -2110,7 +2111,15 @@ func (s *APIServer) getStaticTokens(auth ClientI, w http.ResponseWriter, r *http
 		return nil, trace.Wrap(err)
 	}
 
-	return rawMessage(services.GetStaticTokensMarshaler().Marshal(st, services.WithVersion(version)))
+	return rawMessage(services.GetStaticTokensMarshaler().Marshal(st, services.WithVersion(version), services.PreserveResourceID()))
+}
+
+func (s *APIServer) deleteStaticTokens(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	err := auth.DeleteStaticTokens()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
 }
 
 type setStaticTokensReq struct {
@@ -2144,7 +2153,7 @@ func (s *APIServer) getClusterAuthPreference(auth ClientI, w http.ResponseWriter
 		return nil, trace.Wrap(err)
 	}
 
-	return rawMessage(services.GetAuthPreferenceMarshaler().Marshal(cap, services.WithVersion(version)))
+	return rawMessage(services.GetAuthPreferenceMarshaler().Marshal(cap, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 type setClusterAuthPreferenceReq struct {
@@ -2217,7 +2226,7 @@ func (s *APIServer) getAllTunnelConnections(auth ClientI, w http.ResponseWriter,
 	}
 	items := make([]json.RawMessage, len(conns))
 	for i, conn := range conns {
-		data, err := services.MarshalTunnelConnection(conn, services.WithVersion(version))
+		data, err := services.MarshalTunnelConnection(conn, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -2282,7 +2291,7 @@ func (s *APIServer) getRemoteClusters(auth ClientI, w http.ResponseWriter, r *ht
 	}
 	items := make([]json.RawMessage, len(clusters))
 	for i, cluster := range clusters {
-		data, err := services.MarshalRemoteCluster(cluster, services.WithVersion(version))
+		data, err := services.MarshalRemoteCluster(cluster, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -2297,7 +2306,7 @@ func (s *APIServer) getRemoteCluster(auth ClientI, w http.ResponseWriter, r *htt
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.MarshalRemoteCluster(cluster, services.WithVersion(version)))
+	return rawMessage(services.MarshalRemoteCluster(cluster, services.WithVersion(version), services.PreserveResourceID()))
 }
 
 // deleteRemoteCluster deletes remote cluster by name

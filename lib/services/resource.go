@@ -1,5 +1,5 @@
 /*
-Copyright 2015 Gravitational, Inc.
+Copyright 2015-2019 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -230,6 +230,10 @@ type MarshalConfig struct {
 
 	// ID is a record ID to assign
 	ID int64
+
+	// PreserveResourceID preserves resource IDs in resource
+	// specs when marshaling
+	PreserveResourceID bool
 }
 
 // GetVersion returns explicitly provided version or sets latest as default
@@ -268,6 +272,15 @@ func WithVersion(v string) MarshalOption {
 		default:
 			return trace.BadParameter("version '%v' is not supported", v)
 		}
+	}
+}
+
+// PreserveResourceID preserves resource ID when
+// marshaling value
+func PreserveResourceID() MarshalOption {
+	return func(c *MarshalConfig) error {
+		c.PreserveResourceID = true
+		return nil
 	}
 }
 

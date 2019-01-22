@@ -40,6 +40,18 @@ message Event {
         services.ClusterNameV2 ClusterName = 6 [(gogoproto.jsontag) = "cluster_name,omitempty"];
         // ClusterConfig is a cluster configuration resource
         services.ClusterConfigV3 ClusterConfig = 7 [(gogoproto.jsontag) = "cluster_config,omitempty"];
+        // User is a user resource
+        services.UserV2 User = 8 [(gogoproto.jsontag) = "user,omitempty"];
+        // Role is a role resource
+        services.RoleV3 Role = 9 [(gogoproto.jsontag) = "role,omitempty"];
+        // Namespace is a namespace resource
+        services.Namespace Namespace = 10 [(gogoproto.jsontag) = "namespace,omitempty"];
+        // Server is a node or proxy resource
+        services.ServerV2 Server = 11 [(gogoproto.jsontag) = "server,omitempty"];
+        // ReverseTunnel is a resource with reverse tunnel
+        services.ReverseTunnelV2 ReverseTunnel = 12 [(gogoproto.jsontag) = "reverse_tunnel,omitempty"];
+        // TunnelConnection is a resource for tunnel connnections
+        services.TunnelConnectionV2 TunnelConnection = 13 [(gogoproto.jsontag) = "tunnel_connection,omitempty"];
     }
 }
 

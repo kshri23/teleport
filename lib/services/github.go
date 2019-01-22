@@ -314,7 +314,23 @@ func (*TeleportGithubConnectorMarshaler) Unmarshal(bytes []byte) (GithubConnecto
 
 // MarshalGithubConnector marshals Github connector to JSON
 func (*TeleportGithubConnectorMarshaler) Marshal(c GithubConnector, opts ...MarshalOption) ([]byte, error) {
-	return json.Marshal(c)
+	cfg, err := collectOptions(opts)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	switch resource := c.(type) {
+	case *GithubConnectorV3:
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *resource
+			copy.SetResourceID(0)
+			resource = &copy
+		}
+		return utils.FastMarshal(resource)
+	default:
+		return nil, trace.BadParameter("unrecognized resource version %T", c)
+	}
 }
 
 // GithubConnectorV3SchemaTemplate is the JSON schema for a Github connector

@@ -39,6 +39,15 @@ type UserGetter interface {
 	GetUser(user string) (User, error)
 }
 
+// UserService is reponsible for basic user management
+type UsersService interface {
+	UserGetter
+	// UpsertUser updates parameters about user
+	UpsertUser(user User) error
+	// DeleteUser deletes a user with all the keys from the backend
+	DeleteUser(user string) error
+}
+
 // Identity is responsible for managing user entries and external identities
 type Identity interface {
 	// GetUsers returns a list of users registered with the local auth server
@@ -50,13 +59,7 @@ type Identity interface {
 	// CreateUser creates user if it does not exist
 	CreateUser(user User) error
 
-	// UpsertUser updates parameters about user
-	UpsertUser(user User) error
-
-	UserGetter
-
-	// DeleteUser deletes a user with all the keys from the backend
-	DeleteUser(user string) error
+	UsersService
 
 	// AddUserLoginAttempt logs user login attempt
 	AddUserLoginAttempt(user string, attempt LoginAttempt, ttl time.Duration) error

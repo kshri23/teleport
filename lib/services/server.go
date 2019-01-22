@@ -1,3 +1,19 @@
+/*
+Copyright 2015-2019 Gravitational, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package services
 
 import (
@@ -553,7 +569,9 @@ func UnmarshalServerResource(data []byte, kind string, cfg *MarshalConfig) (Serv
 		}
 		s.Kind = kind
 		v2 := s.V2()
-		v2.SetResourceID(cfg.ID)
+		if cfg.ID != 0 {
+			v2.SetResourceID(cfg.ID)
+		}
 		return v2, nil
 	case V2:
 		var s ServerV2
@@ -571,8 +589,9 @@ func UnmarshalServerResource(data []byte, kind string, cfg *MarshalConfig) (Serv
 		if err := s.CheckAndSetDefaults(); err != nil {
 			return nil, trace.Wrap(err)
 		}
-		s.SetResourceID(cfg.ID)
-
+		if cfg.ID != 0 {
+			s.SetResourceID(cfg.ID)
+		}
 		return &s, nil
 	}
 	return nil, trace.BadParameter("server resource version %q is not supported", h.Version)
@@ -647,7 +666,15 @@ func (*TeleportServerMarshaler) MarshalServer(s Server, opts ...MarshalOption) (
 		if !ok {
 			return nil, trace.BadParameter("don't know how to marshal %v", V2)
 		}
-		return utils.FastMarshal(v.V2())
+		v2 := v.V2()
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *v2
+			copy.SetResourceID(0)
+			v2 = &copy
+		}
+		return utils.FastMarshal(v2)
 	default:
 		return nil, trace.BadParameter("version %v is not supported", version)
 	}

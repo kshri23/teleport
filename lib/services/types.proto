@@ -33,7 +33,7 @@ message Metadata {
 	// Expires is a global expiry time header can be set on any resource in the system.
 	google.protobuf.Timestamp Expires = 6 [(gogoproto.stdtime) = true, (gogoproto.nullable) = true, (gogoproto.jsontag) = "expires,omitempty"];
     // ID is a record ID
-	int64 ID = 7 [(gogoproto.jsontag) = "-"];
+	int64 ID = 7 [(gogoproto.jsontag) = "id,omitempty"];
 };
 
 // Rotation is a status of the rotation of the certificate authority

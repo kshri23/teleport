@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Gravitational, Inc.
+Copyright 2017-2019 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -490,17 +489,30 @@ func (t *TeleportClusterConfigMarshaler) Unmarshal(bytes []byte, opts ...Marshal
 		return nil, trace.Wrap(err)
 	}
 
-	clusterConfig.SetResourceID(cfg.ID)
+	if cfg.ID != 0 {
+		clusterConfig.SetResourceID(cfg.ID)
+	}
 
 	return &clusterConfig, nil
 }
 
 // Marshal marshals ClusterConfig to JSON.
 func (t *TeleportClusterConfigMarshaler) Marshal(c ClusterConfig, opts ...MarshalOption) ([]byte, error) {
-	b, err := json.Marshal(c)
+	cfg, err := collectOptions(opts)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	return b, nil
+	switch resource := c.(type) {
+	case *ClusterConfigV3:
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *resource
+			copy.SetResourceID(0)
+			resource = &copy
+		}
+		return utils.FastMarshal(resource)
+	default:
+		return nil, trace.BadParameter("unrecognized resource version %T", c)
+	}
 }

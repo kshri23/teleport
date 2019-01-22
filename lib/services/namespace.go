@@ -125,8 +125,19 @@ func GetNamespaceSchema() string {
 }
 
 // MarshalNamespace marshals namespace to JSON
-func MarshalNamespace(ns Namespace) ([]byte, error) {
-	return utils.FastMarshal(ns)
+func MarshalNamespace(resource Namespace, opts ...MarshalOption) ([]byte, error) {
+	cfg, err := collectOptions(opts)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if !cfg.PreserveResourceID {
+		// avoid modifying the original object
+		// to prevent unexpected data races
+		copy := resource
+		copy.SetResourceID(0)
+		resource = copy
+	}
+	return utils.FastMarshal(resource)
 }
 
 // UnmarshalNamespace unmarshals role from JSON or YAML,
@@ -152,7 +163,9 @@ func UnmarshalNamespace(data []byte, opts ...MarshalOption) (*Namespace, error) 
 		return nil, trace.Wrap(err)
 	}
 
-	namespace.Metadata.ID = cfg.ID
+	if cfg.ID != 0 {
+		namespace.Metadata.ID = cfg.ID
+	}
 
 	return &namespace, nil
 }

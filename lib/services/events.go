@@ -22,7 +22,7 @@ import (
 	"github.com/gravitational/teleport/lib/backend"
 )
 
-// Watch sets up watch on the evnet
+// Watch sets up watch on the event
 type Watch struct {
 	// Kinds specifies kinds of objects to watch
 	// and whether to load secret data for them

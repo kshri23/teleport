@@ -123,3 +123,7 @@ func (s *ServicesSuite) TestRemoteClustersCRUD(c *check.C) {
 func (s *ServicesSuite) TestEvents(c *check.C) {
 	s.suite.Events(c)
 }
+
+func (s *ServicesSuite) TestEventsClusterConfig(c *check.C) {
+	s.suite.EventsClusterConfig(c)
+}

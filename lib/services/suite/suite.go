@@ -38,6 +38,7 @@ import (
 	"github.com/tstranex/u2f"
 	"golang.org/x/crypto/ssh"
 
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/check.v1"
 )
 
@@ -93,7 +94,15 @@ type ServicesTestSuite struct {
 	WebS          services.Identity
 	ConfigS       services.ClusterConfiguration
 	EventsS       services.Events
+	UsersS        services.UsersService
 	ChangesC      chan interface{}
+}
+
+func (s *ServicesTestSuite) Users() services.UsersService {
+	if s.WebS != nil {
+		return s.WebS
+	}
+	return s.UsersS
 }
 
 func (s *ServicesTestSuite) collectChanges(c *check.C, expected int) []interface{} {
@@ -284,6 +293,8 @@ func (s *ServicesTestSuite) ServerCRUD(c *check.C) {
 
 	out, err = s.PresenceS.GetNodes(srv.Metadata.Namespace)
 	c.Assert(err, check.IsNil)
+	c.Assert(out, check.HasLen, 1)
+	srv.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out, []services.Server{srv})
 
 	out, err = s.PresenceS.GetProxies()
@@ -295,6 +306,8 @@ func (s *ServicesTestSuite) ServerCRUD(c *check.C) {
 
 	out, err = s.PresenceS.GetProxies()
 	c.Assert(err, check.IsNil)
+	c.Assert(out, check.HasLen, 1)
+	proxy.SetResourceID(out[0].GetResourceID())
 	c.Assert(out, check.DeepEquals, []services.Server{proxy})
 
 	out, err = s.PresenceS.GetAuthServers()
@@ -306,6 +319,8 @@ func (s *ServicesTestSuite) ServerCRUD(c *check.C) {
 
 	out, err = s.PresenceS.GetAuthServers()
 	c.Assert(err, check.IsNil)
+	c.Assert(out, check.HasLen, 1)
+	auth.SetResourceID(out[0].GetResourceID())
 	c.Assert(out, check.DeepEquals, []services.Server{auth})
 }
 
@@ -334,6 +349,8 @@ func (s *ServicesTestSuite) ReverseTunnelsCRUD(c *check.C) {
 
 	out, err = s.PresenceS.GetReverseTunnels()
 	c.Assert(err, check.IsNil)
+	c.Assert(out, check.HasLen, 1)
+	tunnel.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out, []services.ReverseTunnel{tunnel})
 
 	err = s.PresenceS.DeleteReverseTunnel(tunnel.Spec.ClusterName)
@@ -507,6 +524,7 @@ func (s *ServicesTestSuite) RolesCRUD(c *check.C) {
 	c.Assert(err, check.IsNil)
 	rout, err := s.Access.GetRole(role.Metadata.Name)
 	c.Assert(err, check.IsNil)
+	role.SetResourceID(rout.GetResourceID())
 	fixtures.DeepCompare(c, rout, &role)
 
 	role.Spec.Allow.Logins = []string{"bob"}
@@ -514,6 +532,7 @@ func (s *ServicesTestSuite) RolesCRUD(c *check.C) {
 	c.Assert(err, check.IsNil)
 	rout, err = s.Access.GetRole(role.Metadata.Name)
 	c.Assert(err, check.IsNil)
+	role.SetResourceID(rout.GetResourceID())
 	c.Assert(rout, check.DeepEquals, &role)
 
 	err = s.Access.DeleteRole(role.Metadata.Name)
@@ -674,6 +693,7 @@ func (s *ServicesTestSuite) TunnelConnectionsCRUD(c *check.C) {
 	out, err = s.PresenceS.GetTunnelConnections(clusterName)
 	c.Assert(err, check.IsNil)
 	c.Assert(len(out), check.Equals, 1)
+	conn.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out[0], conn)
 
 	out, err = s.PresenceS.GetAllTunnelConnections()
@@ -690,6 +710,7 @@ func (s *ServicesTestSuite) TunnelConnectionsCRUD(c *check.C) {
 	out, err = s.PresenceS.GetTunnelConnections(clusterName)
 	c.Assert(err, check.IsNil)
 	c.Assert(len(out), check.Equals, 1)
+	conn.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out[0], conn)
 
 	err = s.PresenceS.DeleteAllTunnelConnections()
@@ -709,6 +730,7 @@ func (s *ServicesTestSuite) TunnelConnectionsCRUD(c *check.C) {
 	out, err = s.PresenceS.GetTunnelConnections(clusterName)
 	c.Assert(err, check.IsNil)
 	c.Assert(len(out), check.Equals, 1)
+	conn.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out[0], conn)
 
 	err = s.PresenceS.DeleteTunnelConnection(clusterName, conn.GetName())
@@ -1030,7 +1052,7 @@ func (s *ServicesTestSuite) Events(c *check.C) {
 					Kind:    services.KindNamespace,
 					Version: services.V2,
 					Metadata: services.Metadata{
-						Name:      defaults.Namespace,
+						Name:      "testnamespace",
 						Namespace: defaults.Namespace,
 					},
 				}
@@ -1076,49 +1098,6 @@ func (s *ServicesTestSuite) Events(c *check.C) {
 			},
 		},
 		{
-			name: "Cluster config",
-			kind: services.WatchKind{
-				Kind: services.KindClusterConfig,
-			},
-			crud: func() services.Resource {
-				config, err := services.NewClusterConfig(services.ClusterConfigSpecV3{})
-				c.Assert(err, check.IsNil)
-
-				err = s.ConfigS.SetClusterConfig(config)
-				c.Assert(err, check.IsNil)
-
-				out, err := s.ConfigS.GetClusterConfig()
-				c.Assert(err, check.IsNil)
-
-				err = s.ConfigS.DeleteClusterConfig()
-				c.Assert(err, check.IsNil)
-
-				return out
-			},
-		},
-		{
-			name: "Cluster name",
-			kind: services.WatchKind{
-				Kind: services.KindClusterName,
-			},
-			crud: func() services.Resource {
-				clusterName, err := services.NewClusterName(services.ClusterNameSpecV2{
-					ClusterName: "example.com",
-				})
-				c.Assert(err, check.IsNil)
-
-				err = s.ConfigS.SetClusterName(clusterName)
-				c.Assert(err, check.IsNil)
-
-				out, err := s.ConfigS.GetClusterName()
-				c.Assert(err, check.IsNil)
-
-				err = s.ConfigS.DeleteClusterName()
-				c.Assert(err, check.IsNil)
-				return out
-			},
-		},
-		{
 			name: "Role",
 			kind: services.WatchKind{
 				Kind: services.KindRole,
@@ -1154,12 +1133,12 @@ func (s *ServicesTestSuite) Events(c *check.C) {
 			},
 			crud: func() services.Resource {
 				user := newUser("user1", []string{"admin"})
-				err := s.WebS.UpsertUser(user)
+				err := s.Users().UpsertUser(user)
 
-				out, err := s.WebS.GetUser(user.GetName())
+				out, err := s.Users().GetUser(user.GetName())
 				c.Assert(err, check.IsNil)
 
-				c.Assert(s.WebS.DeleteUser(user.GetName()), check.IsNil)
+				c.Assert(s.Users().DeleteUser(user.GetName()), check.IsNil)
 				return out
 			},
 		},
@@ -1250,6 +1229,56 @@ func (s *ServicesTestSuite) Events(c *check.C) {
 	s.runEventsTests(c, testCases)
 }
 
+// EventsClusterConfig tests cluster config resource events
+func (s *ServicesTestSuite) EventsClusterConfig(c *check.C) {
+	testCases := []eventTest{
+		{
+			name: "Cluster config",
+			kind: services.WatchKind{
+				Kind: services.KindClusterConfig,
+			},
+			crud: func() services.Resource {
+				config, err := services.NewClusterConfig(services.ClusterConfigSpecV3{})
+				c.Assert(err, check.IsNil)
+
+				err = s.ConfigS.SetClusterConfig(config)
+				c.Assert(err, check.IsNil)
+
+				out, err := s.ConfigS.GetClusterConfig()
+				c.Assert(err, check.IsNil)
+
+				err = s.ConfigS.DeleteClusterConfig()
+				c.Assert(err, check.IsNil)
+
+				return out
+			},
+		},
+		{
+			name: "Cluster name",
+			kind: services.WatchKind{
+				Kind: services.KindClusterName,
+			},
+			crud: func() services.Resource {
+				clusterName, err := services.NewClusterName(services.ClusterNameSpecV2{
+					ClusterName: "example.com",
+				})
+				c.Assert(err, check.IsNil)
+
+				err = s.ConfigS.SetClusterName(clusterName)
+				c.Assert(err, check.IsNil)
+
+				out, err := s.ConfigS.GetClusterName()
+				c.Assert(err, check.IsNil)
+
+				err = s.ConfigS.DeleteClusterName()
+				c.Assert(err, check.IsNil)
+				return out
+			},
+		},
+	}
+	s.runEventsTests(c, testCases)
+}
+
 func (s *ServicesTestSuite) runEventsTests(c *check.C, testCases []eventTest) {
 	ctx := context.TODO()
 	w, err := s.EventsS.NewWatcher(ctx, services.Watch{
@@ -1261,42 +1290,31 @@ func (s *ServicesTestSuite) runEventsTests(c *check.C, testCases []eventTest) {
 	select {
 	case event := <-w.Events():
 		c.Assert(event.Type, check.Equals, backend.OpInit)
+	case <-w.Done():
+		c.Fatalf("Watcher exited with error %v", w.Error())
 	case <-time.After(2 * time.Second):
-		c.Fatalf("timeout waiting for init event")
+		c.Fatalf("Timeout waiting for init event")
 	}
 
 	for i, tc := range testCases {
 		comment := check.Commentf("test case %v; kind: %v, load secrets %v", i, tc.kind.Kind, tc.kind.LoadSecrets)
 		resource := tc.crud()
 
-		select {
-		case event := <-w.Events():
-			c.Assert(event.Type, check.Equals, backend.OpPut, comment)
-			fixtures.DeepCompare(c, event.Resource, resource)
-		case <-time.After(2 * time.Second):
-			c.Fatalf("timeout waiting for event", comment)
-		}
+		ExpectResource(c, w, 3*time.Second, resource, comment)
 
-		select {
-		case event := <-w.Events():
-			c.Assert(event.Type, check.Equals, backend.OpDelete, comment)
-			meta := resource.GetMetadata()
-			header := &services.ResourceHeader{
-				Kind:    resource.GetKind(),
-				SubKind: resource.GetSubKind(),
-				Version: resource.GetVersion(),
-				Metadata: services.Metadata{
-					Name:      meta.Name,
-					Namespace: meta.Namespace,
-				},
-			}
-			// delete events don't have IDs yet
-			header.SetResourceID(0)
-			c.Assert(header, check.NotNil)
-			fixtures.DeepCompare(c, event.Resource, header)
-		case <-time.After(2 * time.Second):
-			c.Fatalf("timeout waiting for event", comment)
+		meta := resource.GetMetadata()
+		header := &services.ResourceHeader{
+			Kind:    resource.GetKind(),
+			SubKind: resource.GetSubKind(),
+			Version: resource.GetVersion(),
+			Metadata: services.Metadata{
+				Name:      meta.Name,
+				Namespace: meta.Namespace,
+			},
 		}
+		// delete events don't have IDs yet
+		header.SetResourceID(0)
+		ExpectDeleteResource(c, w, 3*time.Second, header, comment)
 	}
 }
 
@@ -1312,4 +1330,52 @@ func eventsTestKinds(tests []eventTest) []services.WatchKind {
 		out[i] = tc.kind
 	}
 	return out
+}
+
+func ExpectResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource, comment check.CommentInterface) {
+	timeoutC := time.After(timeout)
+waitLoop:
+	for {
+		select {
+		case <-timeoutC:
+			c.Fatalf("Timeout waiting for event, %v", comment.CheckCommentString())
+		case <-w.Done():
+			c.Fatalf("Watcher exited with error %v", w.Error())
+		case event := <-w.Events():
+			if event.Type != backend.OpPut {
+				log.Debugf("Skipping event %v %v", event.Type, event.Resource.GetName())
+				continue
+			}
+			if resource.GetResourceID() > event.Resource.GetResourceID() {
+				log.Debugf("Skipping stale event %v %v %v %v, latest object version is %v", event.Type, event.Resource.GetKind(), event.Resource.GetName(), event.Resource.GetResourceID(), resource.GetResourceID())
+				continue waitLoop
+			}
+			if resource.GetName() != event.Resource.GetName() || resource.GetKind() != event.Resource.GetKind() || resource.GetSubKind() != event.Resource.GetSubKind() {
+				log.Debugf("Skipping event resource %v, expecting %v", event.Type, event.Resource.GetMetadata(), event.Resource.GetMetadata())
+				continue waitLoop
+			}
+			fixtures.DeepCompare(c, resource, event.Resource)
+			break waitLoop
+		}
+	}
+}
+
+func ExpectDeleteResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource, comment check.CommentInterface) {
+	timeoutC := time.After(timeout)
+waitLoop:
+	for {
+		select {
+		case <-timeoutC:
+			c.Fatalf("Timeout waiting for event", comment)
+		case <-w.Done():
+			c.Fatalf("Watcher exited with error %v", w.Error())
+		case event := <-w.Events():
+			if event.Type != backend.OpDelete {
+				log.Debugf("Skipping stale event %v %v", event.Type, event.Resource.GetName())
+				continue
+			}
+			fixtures.DeepCompare(c, resource, event.Resource)
+			break waitLoop
+		}
+	}
 }

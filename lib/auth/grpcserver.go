@@ -97,6 +97,7 @@ func (g *GRPCServer) WatchEvents(watch *proto.Watch, stream proto.AuthService_Wa
 		return trail.ToGRPC(err)
 	}
 	defer watcher.Close()
+
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -215,13 +216,37 @@ func eventToGRPC(in services.Event) (*proto.Event, error) {
 		out.Resource = &proto.Event_ProvisionToken{
 			ProvisionToken: r,
 		}
+	case *services.ClusterNameV2:
+		out.Resource = &proto.Event_ClusterName{
+			ClusterName: r,
+		}
 	case *services.ClusterConfigV3:
 		out.Resource = &proto.Event_ClusterConfig{
 			ClusterConfig: r,
 		}
-	case *services.ClusterNameV2:
-		out.Resource = &proto.Event_ClusterName{
-			ClusterName: r,
+	case *services.UserV2:
+		out.Resource = &proto.Event_User{
+			User: r,
+		}
+	case *services.RoleV3:
+		out.Resource = &proto.Event_Role{
+			Role: r,
+		}
+	case *services.Namespace:
+		out.Resource = &proto.Event_Namespace{
+			Namespace: r,
+		}
+	case *services.ServerV2:
+		out.Resource = &proto.Event_Server{
+			Server: r,
+		}
+	case *services.ReverseTunnelV2:
+		out.Resource = &proto.Event_ReverseTunnel{
+			ReverseTunnel: r,
+		}
+	case *services.TunnelConnectionV2:
+		out.Resource = &proto.Event_TunnelConnection{
+			TunnelConnection: r,
 		}
 	default:
 		return nil, trace.BadParameter("resource type %T is not supported", in.Resource)
@@ -269,6 +294,24 @@ func eventFromGRPC(in proto.Event) (*services.Event, error) {
 		out.Resource = r
 		return &out, nil
 	} else if r := in.GetClusterConfig(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetUser(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetRole(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetNamespace(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetServer(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetReverseTunnel(); r != nil {
+		out.Resource = r
+		return &out, nil
+	} else if r := in.GetTunnelConnection(); r != nil {
 		out.Resource = r
 		return &out, nil
 	} else {

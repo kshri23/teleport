@@ -372,6 +372,34 @@ func (a *AuthWithRoles) NewWatcher(ctx context.Context, watch services.Watch) (s
 	}
 	for _, kind := range watch.Kinds {
 		switch kind.Kind {
+		case services.KindNamespace:
+			if err := a.action(defaults.Namespace, services.KindNamespace, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindUser:
+			if err := a.action(defaults.Namespace, services.KindUser, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindRole:
+			if err := a.action(defaults.Namespace, services.KindRole, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindNode:
+			if err := a.action(defaults.Namespace, services.KindNode, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindProxy:
+			if err := a.action(defaults.Namespace, services.KindProxy, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindTunnelConnection:
+			if err := a.action(defaults.Namespace, services.KindTunnelConnection, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		case services.KindReverseTunnel:
+			if err := a.action(defaults.Namespace, services.KindReverseTunnel, services.VerbRead); err != nil {
+				return nil, trace.Wrap(err)
+			}
 		case services.KindClusterConfig:
 			if err := a.action(defaults.Namespace, services.KindClusterConfig, services.VerbRead); err != nil {
 				return nil, trace.Wrap(err)
@@ -398,8 +426,9 @@ func (a *AuthWithRoles) NewWatcher(ctx context.Context, watch services.Watch) (s
 					return nil, trace.Wrap(err)
 				}
 			}
+
 		default:
-			return nil, trace.AccessDenied("can't watch %v events", kind)
+			return nil, trace.AccessDenied("not authorized to watch %v events", kind.Kind)
 		}
 	}
 	return a.authServer.NewWatcher(ctx, watch)

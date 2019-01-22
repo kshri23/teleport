@@ -567,9 +567,9 @@ func (*TeleportUserMarshaler) UnmarshalUser(bytes []byte, opts ...MarshalOption)
 		if err := u.CheckAndSetDefaults(); err != nil {
 			return nil, trace.Wrap(err)
 		}
-
-		u.SetResourceID(cfg.ID)
-
+		if cfg.ID != 0 {
+			u.SetResourceID(cfg.ID)
+		}
 		return &u, nil
 	}
 
@@ -607,7 +607,15 @@ func (*TeleportUserMarshaler) MarshalUser(u User, opts ...MarshalOption) ([]byte
 		if !ok {
 			return nil, trace.BadParameter("don't know how to marshal %v", V2)
 		}
-		return json.Marshal(v.V2())
+		v2 := v.V2()
+		if !cfg.PreserveResourceID {
+			// avoid modifying the original object
+			// to prevent unexpected data races
+			copy := *v2
+			copy.SetResourceID(0)
+			v2 = &copy
+		}
+		return utils.FastMarshal(v2)
 	default:
 		return nil, trace.BadParameter("version %v is not supported", version)
 	}

@@ -1965,6 +1965,23 @@ func (s *TLSSuite) TestStreamEvents(c *check.C) {
 	fixtures.ExpectAccessDenied(c, w3.Error())
 }
 
+// TestEvents tests events suite
+func (s *TLSSuite) TestEvents(c *check.C) {
+	clt, err := s.server.NewClient(TestAdmin())
+	c.Assert(err, check.IsNil)
+
+	suite := &suite.ServicesTestSuite{
+		ConfigS:       clt,
+		EventsS:       clt,
+		PresenceS:     clt,
+		CAS:           clt,
+		ProvisioningS: clt,
+		Access:        clt,
+		UsersS:        clt,
+	}
+	suite.Events(c)
+}
+
 // TestStreamCacheEvents tests streaming of events of multiple kinds
 // used in caching service
 func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {

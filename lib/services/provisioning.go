@@ -302,7 +302,9 @@ func UnmarshalProvisionToken(data []byte, opts ...MarshalOption) (ProvisionToken
 			return nil, trace.Wrap(err)
 		}
 		v2 := p.V2()
-		v2.SetResourceID(cfg.ID)
+		if cfg.ID != 0 {
+			v2.SetResourceID(cfg.ID)
+		}
 		return v2, nil
 	case V2:
 		var p ProvisionTokenV2
@@ -318,7 +320,9 @@ func UnmarshalProvisionToken(data []byte, opts ...MarshalOption) (ProvisionToken
 		if err := p.CheckAndSetDefaults(); err != nil {
 			return nil, trace.Wrap(err)
 		}
-		p.SetResourceID(cfg.ID)
+		if cfg.ID != 0 {
+			p.SetResourceID(cfg.ID)
+		}
 		return &p, nil
 	}
 	return nil, trace.BadParameter("server resource version %v is not supported", h.Version)
