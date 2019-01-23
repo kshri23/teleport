@@ -44,6 +44,9 @@ type Cache struct {
 	trustCache         services.Trust
 	clusterConfigCache services.ClusterConfiguration
 	provisionerCache   services.Provisioner
+	usersCache         services.UsersService
+	accessCache        services.Access
+	presenceCache      services.Presence
 }
 
 // Config is Cache config
@@ -59,6 +62,8 @@ type Config struct {
 	ClusterConfig services.ClusterConfiguration
 	// Provisioner is a provisioning service
 	Provisioner services.Provisioner
+	// Users is a users service
+	Users services.UsersService
 	// Backend is a backend for local cache
 	Backend backend.Backend
 	// RetryPeriod is a period between cache retries on failures
@@ -85,7 +90,7 @@ func (c *Config) CheckAndSetDefaults() error {
 		return trace.BadParameter("missing ClusterConfig parameter")
 	}
 	if c.Provisioner == nil {
-		return trace.BadParameter("missing Provisiong parameter")
+		return trace.BadParameter("missing Provisioner parameter")
 	}
 	if c.Backend == nil {
 		return trace.BadParameter("missing Backend parameter")
@@ -132,7 +137,7 @@ func New(config Config) (*Cache, error) {
 			trace.Component: teleport.ComponentCachingClient,
 		}),
 	}
-	_, err := cs.fetch()
+	err := cs.fetch()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -178,40 +183,41 @@ func (c *Cache) notify(event CacheEvent) {
 	}
 }
 
-func (c *Cache) fetch() (int64, error) {
-	id1, err := c.updateCertAuthorities(services.HostCA)
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	id2, err := c.updateCertAuthorities(services.UserCA)
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	id3, err := c.updateStaticTokens()
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	id4, err := c.updateTokens()
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	id5, err := c.updateClusterConfig()
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	id6, err := c.updateClusterName()
-	if err != nil {
-		return -1, trace.Wrap(err)
-	}
-	return max(id1, id2, id3, id4, id5, id6), nil
-}
-
-// Close closes all outstanding and active cache operations
-func (c *Cache) Close() error {
-	c.cancel()
-	return nil
-}
-
+// fetchAndWatch keeps cache up to date by replaying
+// events and syncing local cache storage.
+//
+// Here are some thoughts on consistency in face of errors:
+//
+// 1. Every client is connected to the database fan-out
+// system. This system creates a buffered channel for every
+// client and tracks the channel overflow. Thanks to channels every client gets its
+// own unique iterator over the event stream. If client looses connection
+// or fails to keep up with the stream, the server will terminate
+// the channel and client will have to re-initialize.
+//
+// 2. Replays of stale events. Etcd provides a strong
+// mechanism to track the versions of the storage - revisions
+// of every operation that are uniquely numbered and monothonically
+// and consistently ordered thanks to Raft. Unfortunately, DynamoDB
+// does not provide such a mechanism for its event system, so
+// some tradeofs have to be made:
+//   a. We assume that events are ordered in regards to the
+//   individual key operations which is the guarantees both Etcd and DynamodDB
+//   provide.
+//   b. Thanks to the init event sent by the server on a sucessfull connect,
+//   and guarantees 1 and 2a, client assumes that once it connects and receives an event,
+//   it will not miss any events, however it can receive stale events.
+//   Event could be stale, if it relates to a change that happened before
+//   the version read by client from the database, for example,
+//   given the event stream: 1. Update a=1 2. Delete a 3. Put a = 2
+//   Client could have subscribed before event 1 happened,
+//   read the value a=2 and then received events 1 and 2 and 3.
+//   The cache will replay all events 1, 2 and 3 and end up in the correct
+//   state 3. If we had a consistent revision number, we could
+//   have skipped 1 and 2, but in the absense of such mechanism in Dynamo
+//   we assume that this cache will eventually end up in a correct state
+//   potentially lagging behind the state of the database.
+//
 func (c *Cache) fetchAndWatch() error {
 	watcher, err := c.Events.NewWatcher(c.ctx, services.Watch{
 		Kinds: []services.WatchKind{
@@ -220,6 +226,14 @@ func (c *Cache) fetchAndWatch() error {
 			{Kind: services.KindToken},
 			{Kind: services.KindClusterName},
 			{Kind: services.KindClusterConfig},
+			//
+			{Kind: services.KindUser},
+			{Kind: services.KindRole},
+			{Kind: services.KindNamespace},
+			{Kind: services.KindNode},
+			{Kind: services.KindProxy},
+			{Kind: services.KindReverseTunnel},
+			{Kind: services.KindTunnelConnection},
 		},
 	})
 	if err != nil {
@@ -253,7 +267,7 @@ func (c *Cache) fetchAndWatch() error {
 			return trace.BadParameter("expected init event, got %v instead", event.Type)
 		}
 	}
-	resourceID, err := c.fetch()
+	err = c.fetch()
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -268,7 +282,7 @@ func (c *Cache) fetchAndWatch() error {
 		case <-c.ctx.Done():
 			return trace.ConnectionProblem(c.ctx.Err(), "context is closing")
 		case event := <-watcher.Events():
-			resourceID, err = c.processEvent(event, resourceID)
+			err = c.processEvent(event)
 			if err != nil {
 				return trace.Wrap(err)
 			}
@@ -277,7 +291,56 @@ func (c *Cache) fetchAndWatch() error {
 	}
 }
 
-func (c *Cache) processEvent(event services.Event, resourceID int64) (int64, error) {
+// Close closes all outstanding and active cache operations
+func (c *Cache) Close() error {
+	c.cancel()
+	return nil
+}
+
+func (c *Cache) fetch() error {
+	if err := c.updateCertAuthorities(services.HostCA); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateCertAuthorities(services.UserCA); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateStaticTokens(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateTokens(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateClusterConfig(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateClusterName(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateUsers(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateRoles(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateNamespaces(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateNodes(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateProxies(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err = c.updateReverseTunnels(); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.updateTunnelConnections(); err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (c *Cache) processEvent(event services.Event) error {
 	switch event.Type {
 	case backend.OpDelete:
 		switch event.Resource.GetKind() {
@@ -285,25 +348,25 @@ func (c *Cache) processEvent(event services.Event, resourceID int64) (int64, err
 			err := c.provisionerCache.DeleteToken(event.Resource.GetName())
 			if err != nil {
 				c.Warningf("Failed to delete provisioning token %v.", err)
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.KindClusterConfig:
 			err := c.clusterConfigCache.DeleteClusterConfig()
 			if err != nil {
 				c.Warningf("Failed to delete cluster config %v.", err)
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.KindClusterName:
 			err := c.clusterConfigCache.DeleteClusterName()
 			if err != nil {
 				c.Warningf("Failed to delete cluster name %v.", err)
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.KindStaticTokens:
 			err := c.clusterConfigCache.DeleteStaticTokens()
 			if err != nil {
 				c.Warningf("Failed to delete static tokens %v.", err)
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.KindCertAuthority:
 			err := c.trustCache.DeleteCertAuthority(services.CertAuthID{
@@ -312,37 +375,107 @@ func (c *Cache) processEvent(event services.Event, resourceID int64) (int64, err
 			})
 			if err != nil {
 				c.Warningf("Failed to delete cert authority %v.", err)
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
+			}
+		case services.KindUser:
+			err := c.usersCache.DeleteUser(event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete user %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindRole:
+			err := c.accessCache.DeleteRole(event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete role %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindNamespace:
+			err := c.presenceCache.DeleteNamespace(event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete namespace %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindNode:
+			err := c.presenceCache.DeleteNode(event.Resource.GetNamespace(), event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete resource %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindProxy:
+			err := c.presenceCache.DeleteProxy(event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete resource %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindReverseTunnel:
+			err := c.presenceCache.DeleteReverseTunnel(event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete resource %v.", err)
+				return trace.Wrap(err)
+			}
+		case services.KindTunnelConnection:
+			err := c.presenceCache.DeleteTunnelConnection(event.Resource.GetSubKind(), event.Resource.GetName())
+			if err != nil {
+				c.Warningf("Failed to delete resource %v.", err)
+				return trace.Wrap(err)
 			}
 		default:
 			c.Debugf("Skipping unsupported resource %v", event.Resource.GetKind())
 		}
 	case backend.OpPut:
-		if resourceID > event.Resource.GetResourceID() {
-			c.Warningf("Ignoring out of order resource ID, last processed %v, received: %v.", resourceID, event.Resource.GetResourceID())
-			return resourceID, nil
-		}
-		resourceID = event.Resource.GetResourceID()
 		switch resource := event.Resource.(type) {
 		case services.StaticTokens:
 			if err := c.clusterConfigCache.SetStaticTokens(resource); err != nil {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.ProvisionToken:
 			if err := c.provisionerCache.UpsertToken(resource); err != nil {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.CertAuthority:
 			if err := c.trustCache.UpsertCertAuthority(resource); err != nil {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.ClusterConfig:
 			if err := c.clusterConfigCache.SetClusterConfig(resource); err != nil {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		case services.ClusterName:
 			if err := c.clusterConfigCache.UpsertClusterName(resource); err != nil {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
+			}
+		case services.User:
+			if err := c.usersCache.UpsertUser(resource); err != nil {
+				return trace.Wrap(err)
+			}
+		case services.Role:
+			if err := c.accessCache.UpsertRole(resource); err != nil {
+				return trace.Wrap(err)
+			}
+		case services.Namespace:
+			if err := c.accessCache.UpsertNamespace(resource); err != nil {
+				return trace.Wrap(err)
+			}
+		case services.Server:
+			switch resource.GetKind() {
+			case services.KindNode:
+				if err := c.presenceCache.UpsertNode(resource); err != nil {
+					return trace.Wrap(err)
+				}
+			case services.KindProxy:
+				if err := c.presenceCache.UpsertProxy(resource); err != nil {
+					return trace.Wrap(err)
+				}
+			default:
+				c.Warningf("Skipping unsupported resource %v.", event.Resource.GetKind())
+			}
+		case services.ReverseTunnel:
+			if err := c.presenceCache.UpsertReverseTunnel(resource); err != nil {
+				return trace.Wrap(err)
+			}
+		case services.TunnelConnection:
+			if err := c.presenceCache.UpsertTunnelConnection(resource); err != nil {
+				return trace.Wrap(err)
 			}
 		default:
 			c.Warningf("Skipping unsupported resource %v.", event.Resource.GetKind())
@@ -350,116 +483,150 @@ func (c *Cache) processEvent(event services.Event, resourceID int64) (int64, err
 	default:
 		c.Warningf("Skipping unsupported event type %v.", event.Type)
 	}
-	return resourceID, nil
+	return nil
 }
 
-func (c *Cache) updateCertAuthorities(caType services.CertAuthType) (int64, error) {
+func (c *Cache) updateCertAuthorities(caType services.CertAuthType) error {
 	authorities, err := c.Trust.GetCertAuthorities(caType, true, services.SkipValidation())
 	if err != nil {
-		return -1, trace.Wrap(err)
+		return trace.Wrap(err)
 	}
 	if err := c.trustCache.DeleteAllCertAuthorities(caType); err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	var resourceID int64
 	for _, ca := range authorities {
-		if ca.GetResourceID() > resourceID {
-			resourceID = ca.GetResourceID()
-		}
 		if err := c.trustCache.UpsertCertAuthority(ca); err != nil {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	return resourceID, nil
+	return nil
 }
 
-func (c *Cache) updateStaticTokens() (int64, error) {
+func (c *Cache) updateStaticTokens() error {
 	staticTokens, err := c.ClusterConfig.GetStaticTokens()
 	if err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 		err := c.clusterConfigCache.DeleteStaticTokens()
 		if err != nil {
 			if !trace.IsNotFound(err) {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		}
-		return 0, nil
+		return nil
 	}
 	err = c.clusterConfigCache.SetStaticTokens(staticTokens)
 	if err != nil {
-		return -1, trace.Wrap(err)
+		return trace.Wrap(err)
 	}
-	return staticTokens.GetResourceID(), nil
+	return nil
 }
 
-func (c *Cache) updateTokens() (int64, error) {
+func (c *Cache) updateTokens() error {
 	tokens, err := c.Provisioner.GetTokens()
 	if err != nil {
-		return -1, trace.Wrap(err)
+		return trace.Wrap(err)
 	}
 	if err := c.provisionerCache.DeleteAllTokens(); err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	var resourceID int64
 	for _, token := range tokens {
-		if token.GetResourceID() > resourceID {
-			resourceID = token.GetResourceID()
-		}
 		if err := c.provisionerCache.UpsertToken(token); err != nil {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	return resourceID, nil
+	return nil
 }
 
-func (c *Cache) updateClusterConfig() (int64, error) {
+func (c *Cache) updateClusterConfig() error {
 	clusterConfig, err := c.ClusterConfig.GetClusterConfig()
 	if err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 		err := c.clusterConfigCache.DeleteClusterConfig()
 		if err != nil {
 			if !trace.IsNotFound(err) {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		}
-		return 0, nil
+		return nil
 	}
 	if err := c.clusterConfigCache.SetClusterConfig(clusterConfig); err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	return clusterConfig.GetResourceID(), nil
+	return nil
 }
 
-func (c *Cache) updateClusterName() (int64, error) {
+func (c *Cache) updateClusterName() error {
 	clusterName, err := c.ClusterConfig.GetClusterName()
 	if err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 		err := c.clusterConfigCache.DeleteClusterName()
 		if err != nil {
 			if !trace.IsNotFound(err) {
-				return -1, trace.Wrap(err)
+				return trace.Wrap(err)
 			}
 		}
-		return 0, nil
+		return nil
 	}
 	if err := c.clusterConfigCache.UpsertClusterName(clusterName); err != nil {
 		if !trace.IsNotFound(err) {
-			return -1, trace.Wrap(err)
+			return trace.Wrap(err)
 		}
 	}
-	return clusterName.GetResourceID(), nil
+	return nil
+}
+
+func (c *Cache) updateUsers() error {
+	values, err := c.Users.GetUsers()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	if err := c.provisionerCache.DeleteAllUsers(); err != nil {
+		if !trace.IsNotFound(err) {
+			return trace.Wrap(err)
+		}
+	}
+	for _, token := range tokens {
+		if err := c.provisionerCache.UpsertToken(token); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	return nil
+}
+
+func (c *Cache) updateRoles() error {
+	return trace.Wrap(err)
+}
+
+func (c *Cache) updateNamespaces() error {
+	return trace.Wrap(err)
+}
+
+func (c *Cache) updateNodes() error {
+	return trace.Wrap(err)
+}
+
+func (c *Cache) updateProxies() error {
+	return trace.Wrap(err)
+}
+
+func (c *Cache) updateReverseTunnels() error {
+	return trace.Wrap(err)
+}
+
+func (c *Cache) updateTunnelConnections() error {
+	return trace.Wrap(err)
 }
 
 // GetCertAuthority returns certificate authority by given id. Parameter loadSigningKeys
@@ -497,14 +664,4 @@ func (c *Cache) GetClusterConfig(opts ...services.MarshalOption) (services.Clust
 // GetClusterName gets the name of the cluster from the backend.
 func (c *Cache) GetClusterName(opts ...services.MarshalOption) (services.ClusterName, error) {
 	return c.clusterConfigCache.GetClusterName(opts...)
-}
-
-func max(v ...int64) int64 {
-	var m int64
-	for _, i := range v {
-		if i > m {
-			m = i
-		}
-	}
-	return m
 }

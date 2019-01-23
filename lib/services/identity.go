@@ -46,19 +46,18 @@ type UsersService interface {
 	UpsertUser(user User) error
 	// DeleteUser deletes a user with all the keys from the backend
 	DeleteUser(user string) error
+	// GetUsers returns a list of users registered with the local auth server
+	GetUsers() ([]User, error)
+	// DeleteAllUsers deletes all users
+	DeleteAllUsers() error
 }
 
 // Identity is responsible for managing user entries and external identities
 type Identity interface {
-	// GetUsers returns a list of users registered with the local auth server
-	GetUsers() ([]User, error)
-
-	// DeleteAllUsers deletes all users
-	DeleteAllUsers() error
-
-	// CreateUser creates user if it does not exist
+	// CreateUser creates user, only if the user entry does not exist
 	CreateUser(user User) error
 
+	// UsersService implements most methods
 	UsersService
 
 	// AddUserLoginAttempt logs user login attempt

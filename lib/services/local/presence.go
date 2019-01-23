@@ -174,6 +174,12 @@ func (s *PresenceService) DeleteAllNodes(namespace string) error {
 	return s.DeleteRange(context.TODO(), startKey, backend.RangeEnd(startKey))
 }
 
+// DeleteNode deletes node
+func (s *PresenceService) DeleteNode(namespace string, name string) error {
+	key := backend.Key(namespacesPrefix, namespace, nodesPrefix, name)
+	return s.Delete(context.TODO(), key)
+}
+
 // GetNodes returns a list of registered servers
 func (s *PresenceService) GetNodes(namespace string, opts ...services.MarshalOption) ([]services.Server, error) {
 	if namespace == "" {
@@ -298,6 +304,12 @@ func (s *PresenceService) GetProxies() ([]services.Server, error) {
 func (s *PresenceService) DeleteAllProxies() error {
 	startKey := backend.Key(proxiesPrefix)
 	return s.DeleteRange(context.TODO(), startKey, backend.RangeEnd(startKey))
+}
+
+// DeleteProxy deletes proxy
+func (s *PresenceService) DeleteProxy(name string) error {
+	key := backend.Key(proxiesPrefix, name)
+	return s.Delete(context.TODO(), key)
 }
 
 // DeleteAllReverseTunnels deletes all reverse tunnels

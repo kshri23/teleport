@@ -859,6 +859,30 @@ func (c *Client) UpsertNodes(namespace string, servers []services.Server) error 
 	return trace.Wrap(err)
 }
 
+// DeleteAllNodes deletes all nodes in a given namespace
+func (c *Client) DeleteAllNodes(namespace string) error {
+	_, err := c.Delete(c.Endpoint("namespaces", namespace, "nodes"))
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+// DeleteNode deletes node in the namespace by name
+func (c *Client) DeleteNode(namespace string, name string) error {
+	if namespace == "" {
+		return trace.BadParameter("missing parameter namespace")
+	}
+	if name == "" {
+		return trace.BadParameter("missing parameter name")
+	}
+	_, err := c.Delete(c.Endpoint("namespaces", namespace, "nodes", name))
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
 // GetNodes returns the list of servers registered in the cluster.
 func (c *Client) GetNodes(namespace string, opts ...services.MarshalOption) ([]services.Server, error) {
 	if namespace == "" {
@@ -1176,6 +1200,27 @@ func (c *Client) GetProxies() ([]services.Server, error) {
 		re[i] = server
 	}
 	return re, nil
+}
+
+// DeleteAllProxies deletes all proxies
+func (c *Client) DeleteAllProxies() error {
+	_, err := c.Delete(c.Endpoint("proxies"))
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+// DeleteProxy deletes proxy by name
+func (c *Client) DeleteProxy(name string) error {
+	if name == "" {
+		return trace.BadParameter("missing parameter name")
+	}
+	_, err := c.Delete(c.Endpoint("proxies", name))
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
 }
 
 // GetU2FAppID returns U2F settings, like App ID and Facets
@@ -2278,16 +2323,6 @@ func (c *Client) DeleteAllReverseTunnels() error {
 
 // DeleteAllCertNamespaces deletes all namespaces
 func (c *Client) DeleteAllNamespaces() error {
-	return trace.NotImplemented("not implemented")
-}
-
-// DeleteAllProxies deletes all proxies
-func (c *Client) DeleteAllProxies() error {
-	return trace.NotImplemented("not implemented")
-}
-
-// DeleteAllNodes deletes all nodes in a given namespace
-func (c *Client) DeleteAllNodes(namespace string) error {
 	return trace.NotImplemented("not implemented")
 }
 

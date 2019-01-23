@@ -1804,9 +1804,9 @@ func (s *TLSSuite) TestRegisterCAPath(c *check.C) {
 	c.Assert(err, check.IsNil)
 }
 
-// TestStreamNodePresence tests streaming node presence API -
+// TestEventsNodePresence tests streaming node presence API -
 // announcing node and keeping node alive
-func (s *TLSSuite) TestStreamNodePresence(c *check.C) {
+func (s *TLSSuite) TestEventsNodePresence(c *check.C) {
 	node := &services.ServerV2{
 		Kind:    services.KindNode,
 		Version: services.V2,
@@ -1875,8 +1875,9 @@ func (s *TLSSuite) TestStreamNodePresence(c *check.C) {
 	fixtures.ExpectAccessDenied(c, k2.Error())
 }
 
-// TestStreamEvents tests streaming of events
-func (s *TLSSuite) TestStreamEvents(c *check.C) {
+// TestEventsPermissions tests events with regards
+// to certificate authority rotation
+func (s *TLSSuite) TestEventsPermissions(c *check.C) {
 	clt, err := s.server.NewClient(TestBuiltin(teleport.RoleNode))
 	c.Assert(err, check.IsNil)
 	defer clt.Close()
@@ -1909,60 +1910,80 @@ func (s *TLSSuite) TestStreamEvents(c *check.C) {
 	}, false)
 	c.Assert(err, check.IsNil)
 
-	expectResource(c, w, 3*time.Second, ca)
+	suite.ExpectResource(c, w, 3*time.Second, ca)
 
-	// node role is not authorized to get certificate authority
-	// with secret data loaded
-	nodeClt, err := s.server.NewClient(TestBuiltin(teleport.RoleNode))
-	c.Assert(err, check.IsNil)
-	defer nodeClt.Close()
-
-	w2, err := nodeClt.NewWatcher(ctx, services.Watch{
-		Kinds: []services.WatchKind{{Kind: services.KindCertAuthority, LoadSecrets: true}},
-	})
-	c.Assert(err, check.IsNil)
-	defer w2.Close()
-
-	go func() {
-		select {
-		case <-w2.Events():
-		case <-w2.Done():
-		}
-	}()
-
-	select {
-	case <-time.After(time.Second):
-		c.Fatalf("time out expecting error")
-	case <-w2.Done():
+	type testCase struct {
+		name     string
+		identity TestIdentity
+		watches  []services.WatchKind
 	}
 
-	fixtures.ExpectAccessDenied(c, w2.Error())
-
-	// nop roles user is not authorized to watch events
-	nopClt, err := s.server.NewClient(TestBuiltin(teleport.RoleNop))
-	c.Assert(err, check.IsNil)
-	defer nopClt.Close()
-
-	w3, err := nopClt.NewWatcher(ctx, services.Watch{
-		Kinds: []services.WatchKind{{Kind: services.KindCertAuthority}},
-	})
-	c.Assert(err, check.IsNil)
-	defer w3.Close()
-
-	go func() {
-		select {
-		case <-w3.Events():
-		case <-w3.Done():
-		}
-	}()
-
-	select {
-	case <-time.After(time.Second):
-		c.Fatalf("time out expecting error")
-	case <-w3.Done():
+	testCases := []testCase{
+		{
+			name:     "node role is not authorized to get certificate authority with secret data loaded",
+			identity: TestBuiltin(teleport.RoleNode),
+			watches:  []services.WatchKind{{Kind: services.KindCertAuthority, LoadSecrets: true}},
+		},
+		{
+			name:     "node role is not authorized to watch static tokens",
+			identity: TestBuiltin(teleport.RoleNode),
+			watches:  []services.WatchKind{{Kind: services.KindStaticTokens}},
+		},
+		{
+			name:     "node role is not authorized to watch provisioning tokens",
+			identity: TestBuiltin(teleport.RoleNode),
+			watches:  []services.WatchKind{{Kind: services.KindToken}},
+		},
+		{
+			name:     "nop role is not authorized to watch users and roles",
+			identity: TestBuiltin(teleport.RoleNop),
+			watches: []services.WatchKind{
+				{Kind: services.KindUser},
+				{Kind: services.KindRole},
+			},
+		},
+		{
+			name:     "nop role is not authorized to watch cert authorities",
+			identity: TestBuiltin(teleport.RoleNop),
+			watches:  []services.WatchKind{{Kind: services.KindCertAuthority, LoadSecrets: false}},
+		},
+		{
+			name:     "nop role is not authorized to watch cluster config",
+			identity: TestBuiltin(teleport.RoleNop),
+			watches:  []services.WatchKind{{Kind: services.KindClusterConfig, LoadSecrets: false}},
+		},
 	}
 
-	fixtures.ExpectAccessDenied(c, w3.Error())
+	tryWatch := func(tc testCase) {
+		client, err := s.server.NewClient(tc.identity)
+		c.Assert(err, check.IsNil)
+		defer client.Close()
+
+		watcher, err := client.NewWatcher(ctx, services.Watch{
+			Kinds: tc.watches,
+		})
+		c.Assert(err, check.IsNil)
+		defer watcher.Close()
+
+		go func() {
+			select {
+			case <-watcher.Events():
+			case <-watcher.Done():
+			}
+		}()
+
+		select {
+		case <-time.After(time.Second):
+			c.Fatalf("time out expecting error in test %q", tc.name)
+		case <-watcher.Done():
+		}
+
+		fixtures.ExpectAccessDenied(c, watcher.Error())
+	}
+
+	for _, tc := range testCases {
+		tryWatch(tc)
+	}
 }
 
 // TestEvents tests events suite
@@ -1982,9 +2003,8 @@ func (s *TLSSuite) TestEvents(c *check.C) {
 	suite.Events(c)
 }
 
-// TestStreamCacheEvents tests streaming of events of multiple kinds
-// used in caching service
-func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
+// TestEventsClusterConifg test cluster configuration
+func (s *TLSSuite) TestEventsClusterConfig(c *check.C) {
 	clt, err := s.server.NewClient(TestBuiltin(teleport.RoleAdmin))
 	c.Assert(err, check.IsNil)
 	defer clt.Close()
@@ -2023,7 +2043,7 @@ func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
 	}, true)
 	c.Assert(err, check.IsNil)
 
-	expectResource(c, w, 3*time.Second, ca)
+	suite.ExpectResource(c, w, 3*time.Second, ca)
 
 	// set static tokens
 	staticTokens, err := services.NewStaticTokens(services.StaticTokensSpecV2{
@@ -2042,7 +2062,7 @@ func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
 
 	staticTokens, err = s.server.Auth().GetStaticTokens()
 	c.Assert(err, check.IsNil)
-	expectResource(c, w, 3*time.Second, staticTokens)
+	suite.ExpectResource(c, w, 3*time.Second, staticTokens)
 
 	// create provision token and expect the update event
 	token, err := services.NewProvisionToken(
@@ -2055,12 +2075,12 @@ func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
 	token, err = s.server.Auth().GetToken(token.GetName())
 	c.Assert(err, check.IsNil)
 
-	expectResource(c, w, 3*time.Second, token)
+	suite.ExpectResource(c, w, 3*time.Second, token)
 
 	// delete token and expect delete event
 	err = s.server.Auth().DeleteToken(token.GetName())
 	c.Assert(err, check.IsNil)
-	expectDeleteResource(c, w, 3*time.Second, &services.ResourceHeader{
+	suite.ExpectDeleteResource(c, w, 3*time.Second, &services.ResourceHeader{
 		Kind:    services.KindToken,
 		Version: services.V2,
 		Metadata: services.Metadata{
@@ -2082,7 +2102,7 @@ func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
 
 	clusterConfig, err = s.server.Auth().GetClusterConfig()
 	c.Assert(err, check.IsNil)
-	expectResource(c, w, 3*time.Second, clusterConfig)
+	suite.ExpectResource(c, w, 3*time.Second, clusterConfig)
 
 	// update cluster name resource metadata
 	clusterNameResource, err := s.server.Auth().GetClusterName()
@@ -2111,45 +2131,5 @@ func (s *TLSSuite) TestStreamCacheEvents(c *check.C) {
 
 	clusterNameResource, err = s.server.Auth().ClusterConfiguration.GetClusterName()
 	c.Assert(err, check.IsNil)
-	expectResource(c, w, 3*time.Second, clusterNameResource)
-}
-
-func expectResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource) {
-	timeoutC := time.After(timeout)
-waitLoop:
-	for {
-		select {
-		case <-timeoutC:
-			c.Fatalf("Timeout waiting for event")
-		case event := <-w.Events():
-			if event.Type != backend.OpPut {
-				log.Debugf("Skipping event %v %v", event.Type, event.Resource.GetName())
-				continue
-			}
-			if resource.GetResourceID() > event.Resource.GetResourceID() {
-				log.Debugf("Skipping stale event %v %v %v %v, latest object version is %v", event.Type, event.Resource.GetKind(), event.Resource.GetName(), event.Resource.GetResourceID(), resource.GetResourceID())
-				continue waitLoop
-			}
-			fixtures.DeepCompare(c, resource, event.Resource)
-			break waitLoop
-		}
-	}
-}
-
-func expectDeleteResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource) {
-	timeoutC := time.After(timeout)
-waitLoop:
-	for {
-		select {
-		case <-timeoutC:
-			c.Fatalf("Timeout waiting for event")
-		case event := <-w.Events():
-			if event.Type != backend.OpDelete {
-				log.Debugf("Skipping stale event %v %v", event.Type, event.Resource.GetName())
-				continue
-			}
-			fixtures.DeepCompare(c, resource, event.Resource)
-			break waitLoop
-		}
-	}
+	suite.ExpectResource(c, w, 3*time.Second, clusterNameResource)
 }

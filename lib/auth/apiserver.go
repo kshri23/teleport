@@ -106,10 +106,14 @@ func NewAPIServer(config *APIConfig) http.Handler {
 	srv.POST("/:version/namespaces/:namespace/nodes/keepalive", srv.withAuth(srv.keepAliveNode))
 	srv.PUT("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.upsertNodes))
 	srv.GET("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.getNodes))
+	srv.DELETE("/:version/namespaces/:namespace/nodes", srv.withAuth(srv.deleteAllNodes))
+	srv.DELETE("/:version/namespaces/:namespace/nodes/:name", srv.withAuth(srv.deleteNode))
 	srv.POST("/:version/authservers", srv.withAuth(srv.upsertAuthServer))
 	srv.GET("/:version/authservers", srv.withAuth(srv.getAuthServers))
 	srv.POST("/:version/proxies", srv.withAuth(srv.upsertProxy))
 	srv.GET("/:version/proxies", srv.withAuth(srv.getProxies))
+	srv.DELETE("/:version/proxies", srv.withAuth(srv.deleteAllProxies))
+	srv.DELETE("/:version/proxies/:name", srv.withAuth(srv.deleteProxy))
 	srv.POST("/:version/tunnelconnections", srv.withAuth(srv.upsertTunnelConnection))
 	srv.GET("/:version/tunnelconnections/:cluster", srv.withAuth(srv.getTunnelConnections))
 	srv.GET("/:version/tunnelconnections", srv.withAuth(srv.getAllTunnelConnections))
@@ -387,6 +391,36 @@ func (s *APIServer) getNodes(auth ClientI, w http.ResponseWriter, r *http.Reques
 	return marshalServers(servers, version)
 }
 
+// deleteAllNodes deletes all nodes
+func (s *APIServer) deleteAllNodes(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	namespace := p.ByName("namespace")
+	if !services.IsValidNamespace(namespace) {
+		return nil, trace.BadParameter("invalid namespace %q", namespace)
+	}
+	err := auth.DeleteAllNodes(namespace)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
+}
+
+// deleteNode deletes node
+func (s *APIServer) deleteNode(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	namespace := p.ByName("namespace")
+	if !services.IsValidNamespace(namespace) {
+		return nil, trace.BadParameter("invalid namespace %q", namespace)
+	}
+	name := p.ByName("name")
+	if name == "" {
+		return nil, trace.BadParameter("missing node name")
+	}
+	err := auth.DeleteNode(namespace, name)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
+}
+
 // upsertProxy is called by remote SSH nodes when they ping back into the auth service
 func (s *APIServer) upsertProxy(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
 	return s.upsertServer(auth, teleport.RoleProxy, w, r, p, version)
@@ -399,6 +433,28 @@ func (s *APIServer) getProxies(auth ClientI, w http.ResponseWriter, r *http.Requ
 		return nil, trace.Wrap(err)
 	}
 	return marshalServers(servers, version)
+}
+
+// deleteAllProxies deletes all proxies
+func (s *APIServer) deleteAllProxies(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	err := auth.DeleteAllProxies()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
+}
+
+// deleteProxy deletes proxy
+func (s *APIServer) deleteProxy(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	name := p.ByName("name")
+	if name == "" {
+		return nil, trace.BadParameter("missing proxy name")
+	}
+	err := auth.DeleteProxy(name)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
 }
 
 // upsertAuthServer is called by remote Auth servers when they ping back into the auth service
@@ -2209,7 +2265,7 @@ func (s *APIServer) getTunnelConnections(auth ClientI, w http.ResponseWriter, r 
 	}
 	items := make([]json.RawMessage, len(conns))
 	for i, conn := range conns {
-		data, err := services.MarshalTunnelConnection(conn, services.WithVersion(version))
+		data, err := services.MarshalTunnelConnection(conn, services.WithVersion(version), services.PreserveResourceID())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}

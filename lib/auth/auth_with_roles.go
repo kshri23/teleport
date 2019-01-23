@@ -478,6 +478,22 @@ NextNode:
 	return filteredNodes, nil
 }
 
+// DeleteAllNodes deletes all nodes in a given namespace
+func (a *AuthWithRoles) DeleteAllNodes(namespace string) error {
+	if err := a.action(namespace, services.KindNode, services.VerbDelete); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.DeleteAllNodes(namespace)
+}
+
+// DeleteNode deletes node in the namespace
+func (a *AuthWithRoles) DeleteNode(namespace, node string) error {
+	if err := a.action(namespace, services.KindNode, services.VerbDelete); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.DeleteNode(namespace, node)
+}
+
 func (a *AuthWithRoles) GetNodes(namespace string, opts ...services.MarshalOption) ([]services.Server, error) {
 	if err := a.action(namespace, services.KindNode, services.VerbList); err != nil {
 		return nil, trace.Wrap(err)
@@ -548,6 +564,22 @@ func (a *AuthWithRoles) GetProxies() ([]services.Server, error) {
 		return nil, trace.Wrap(err)
 	}
 	return a.authServer.GetProxies()
+}
+
+// DeleteAllProxies deletes all proxies
+func (a *AuthWithRoles) DeleteAllProxies() error {
+	if err := a.action(defaults.Namespace, services.KindProxy, services.VerbDelete); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.DeleteAllProxies()
+}
+
+// DeleteProxy deletes proxy by name
+func (a *AuthWithRoles) DeleteProxy(name string) error {
+	if err := a.action(defaults.Namespace, services.KindProxy, services.VerbDelete); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.DeleteProxy(name)
 }
 
 func (a *AuthWithRoles) UpsertReverseTunnel(r services.ReverseTunnel) error {
@@ -1284,16 +1316,6 @@ func (a *AuthWithRoles) DeleteAllNamespaces() error {
 
 // DeleteAllReverseTunnels deletes all reverse tunnels
 func (a *AuthWithRoles) DeleteAllReverseTunnels() error {
-	return trace.NotImplemented("not implemented")
-}
-
-// DeleteAllProxies deletes all proxies
-func (a *AuthWithRoles) DeleteAllProxies() error {
-	return trace.NotImplemented("not implemented")
-}
-
-// DeleteAllNodes deletes all nodes in a given namespace
-func (a *AuthWithRoles) DeleteAllNodes(namespace string) error {
 	return trace.NotImplemented("not implemented")
 }
 

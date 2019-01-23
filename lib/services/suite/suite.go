@@ -297,6 +297,13 @@ func (s *ServicesTestSuite) ServerCRUD(c *check.C) {
 	srv.SetResourceID(out[0].GetResourceID())
 	fixtures.DeepCompare(c, out, []services.Server{srv})
 
+	err = s.PresenceS.DeleteNode(srv.Metadata.Namespace, srv.GetName())
+	c.Assert(err, check.IsNil)
+
+	out, err = s.PresenceS.GetNodes(srv.Metadata.Namespace)
+	c.Assert(err, check.IsNil)
+	c.Assert(out, check.HasLen, 0)
+
 	out, err = s.PresenceS.GetProxies()
 	c.Assert(err, check.IsNil)
 	c.Assert(len(out), check.Equals, 0)
@@ -309,6 +316,12 @@ func (s *ServicesTestSuite) ServerCRUD(c *check.C) {
 	c.Assert(out, check.HasLen, 1)
 	proxy.SetResourceID(out[0].GetResourceID())
 	c.Assert(out, check.DeepEquals, []services.Server{proxy})
+
+	err = s.PresenceS.DeleteProxy(proxy.GetName())
+	c.Assert(err, check.IsNil)
+
+	out, err = s.PresenceS.GetProxies()
+	c.Assert(out, check.HasLen, 0)
 
 	out, err = s.PresenceS.GetAuthServers()
 	c.Assert(err, check.IsNil)
@@ -1296,11 +1309,10 @@ func (s *ServicesTestSuite) runEventsTests(c *check.C, testCases []eventTest) {
 		c.Fatalf("Timeout waiting for init event")
 	}
 
-	for i, tc := range testCases {
-		comment := check.Commentf("test case %v; kind: %v, load secrets %v", i, tc.kind.Kind, tc.kind.LoadSecrets)
+	for _, tc := range testCases {
 		resource := tc.crud()
 
-		ExpectResource(c, w, 3*time.Second, resource, comment)
+		ExpectResource(c, w, 3*time.Second, resource)
 
 		meta := resource.GetMetadata()
 		header := &services.ResourceHeader{
@@ -1314,7 +1326,7 @@ func (s *ServicesTestSuite) runEventsTests(c *check.C, testCases []eventTest) {
 		}
 		// delete events don't have IDs yet
 		header.SetResourceID(0)
-		ExpectDeleteResource(c, w, 3*time.Second, header, comment)
+		ExpectDeleteResource(c, w, 3*time.Second, header)
 	}
 }
 
@@ -1332,13 +1344,13 @@ func eventsTestKinds(tests []eventTest) []services.WatchKind {
 	return out
 }
 
-func ExpectResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource, comment check.CommentInterface) {
+func ExpectResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource) {
 	timeoutC := time.After(timeout)
 waitLoop:
 	for {
 		select {
 		case <-timeoutC:
-			c.Fatalf("Timeout waiting for event, %v", comment.CheckCommentString())
+			c.Fatalf("Timeout waiting for event")
 		case <-w.Done():
 			c.Fatalf("Watcher exited with error %v", w.Error())
 		case event := <-w.Events():
@@ -1360,13 +1372,13 @@ waitLoop:
 	}
 }
 
-func ExpectDeleteResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource, comment check.CommentInterface) {
+func ExpectDeleteResource(c *check.C, w services.Watcher, timeout time.Duration, resource services.Resource) {
 	timeoutC := time.After(timeout)
 waitLoop:
 	for {
 		select {
 		case <-timeoutC:
-			c.Fatalf("Timeout waiting for event", comment)
+			c.Fatalf("Timeout waiting for event")
 		case <-w.Done():
 			c.Fatalf("Watcher exited with error %v", w.Error())
 		case event := <-w.Events():

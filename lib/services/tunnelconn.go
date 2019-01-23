@@ -94,6 +94,7 @@ func MustCreateTunnelConnection(name string, spec TunnelConnectionSpecV2) Tunnel
 func NewTunnelConnection(name string, spec TunnelConnectionSpecV2) (TunnelConnection, error) {
 	conn := &TunnelConnectionV2{
 		Kind:    KindTunnelConnection,
+		SubKind: spec.ClusterName,
 		Version: V2,
 		Metadata: Metadata{
 			Name:      name,

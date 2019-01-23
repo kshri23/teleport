@@ -201,7 +201,7 @@ type certAuthorityParser struct {
 func (p *certAuthorityParser) parseCertAuthority(event backend.Event) (services.Resource, error) {
 	switch event.Type {
 	case backend.OpDelete:
-		caType, name, err := splitCertAuthorityKey(event.Item.Key)
+		caType, name, err := baseTwoKeys(event.Item.Key)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -210,7 +210,7 @@ func (p *certAuthorityParser) parseCertAuthority(event backend.Event) (services.
 			SubKind: caType,
 			Version: services.V2,
 			Metadata: services.Metadata{
-				Name:      string(name),
+				Name:      name,
 				Namespace: defaults.Namespace,
 			},
 		}, nil
@@ -366,7 +366,19 @@ func parseProxy(event backend.Event) (services.Resource, error) {
 func parseTunnelConnection(event backend.Event) (services.Resource, error) {
 	switch event.Type {
 	case backend.OpDelete:
-		return resourceHeader(event, services.KindTunnelConnection, services.V2, 0)
+		clusterName, name, err := baseTwoKeys(event.Item.Key)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return &services.ResourceHeader{
+			Kind:    services.KindTunnelConnection,
+			SubKind: clusterName,
+			Version: services.V2,
+			Metadata: services.Metadata{
+				Name:      name,
+				Namespace: defaults.Namespace,
+			},
+		}, nil
 	case backend.OpPut:
 		resource, err := services.UnmarshalTunnelConnection(event.Item.Value,
 			services.WithResourceID(event.Item.ID))
@@ -437,13 +449,13 @@ func base(key []byte, offset int) ([]byte, error) {
 	return parts[len(parts)-offset-1], nil
 }
 
-// splitCertAuthorityKey returns key and cert authority type
-func splitCertAuthorityKey(key []byte) (string, []byte, error) {
+// baseTwoKeys returns two last keys
+func baseTwoKeys(key []byte) (string, string, error) {
 	parts := bytes.Split(key, []byte{backend.Separator})
 	if len(parts) < 2 {
-		return "", nil, trace.NotFound("failed parsing %v", string(key))
+		return "", "", trace.NotFound("failed parsing %v", string(key))
 	}
-	return string(parts[len(parts)-2]), parts[len(parts)-1], nil
+	return string(parts[len(parts)-2]), string(parts[len(parts)-1]), nil
 }
 
 type parserFunc func(i backend.Event) (services.Resource, error)

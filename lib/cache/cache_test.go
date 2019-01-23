@@ -291,6 +291,57 @@ func (s *CacheSuite) TestClusterConfig(c *check.C) {
 	fixtures.DeepCompare(c, clusterName, clusterName)
 }
 
+// TestUsersAndRoles tests users and roles
+func (s *CacheSuite) TestUsersAndRoles(c *check.C) {
+	// update cluster config to record at the proxy
+	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
+		SessionRecording: services.RecordAtProxy,
+		Audit: services.AuditConfig{
+			AuditEventsURI: []string{"dynamodb://audit_table_name", "file:///home/log"},
+		},
+	})
+	c.Assert(err, check.IsNil)
+	err = s.clusterConfigS.SetClusterConfig(clusterConfig)
+	c.Assert(err, check.IsNil)
+
+	clusterConfig, err = s.clusterConfigS.GetClusterConfig()
+	c.Assert(err, check.IsNil)
+
+	select {
+	case event := <-s.eventsC:
+		c.Assert(event.Type, check.Equals, EventProcessed)
+	case <-time.After(time.Second):
+		c.Fatalf("timeout waiting for event")
+	}
+
+	out, err := s.cache.GetClusterConfig()
+	c.Assert(err, check.IsNil)
+	clusterConfig.SetResourceID(out.GetResourceID())
+	fixtures.DeepCompare(c, clusterConfig, out)
+
+	// update cluster name resource metadata
+	clusterName, err := services.NewClusterName(services.ClusterNameSpecV2{
+		ClusterName: "example.com",
+	})
+	c.Assert(err, check.IsNil)
+	err = s.clusterConfigS.SetClusterName(clusterName)
+	c.Assert(err, check.IsNil)
+
+	clusterName, err = s.clusterConfigS.GetClusterName()
+	c.Assert(err, check.IsNil)
+
+	select {
+	case event := <-s.eventsC:
+		c.Assert(event.Type, check.Equals, EventProcessed)
+	case <-time.After(time.Second):
+		c.Fatalf("timeout waiting for event")
+	}
+
+	c.Assert(err, check.IsNil)
+	clusterName.SetResourceID(out.GetResourceID())
+	fixtures.DeepCompare(c, clusterName, clusterName)
+}
+
 type proxyEvents struct {
 	sync.Mutex
 	watchers []services.Watcher
