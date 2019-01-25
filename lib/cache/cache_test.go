@@ -33,10 +33,27 @@ import (
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/check.v1"
 )
 
 type CacheSuite struct {
+	clock clockwork.Clock
+}
+
+var _ = check.Suite(&CacheSuite{})
+
+// bootstrap check
+func TestState(t *testing.T) { check.TestingT(t) }
+
+func (s *CacheSuite) SetUpSuite(c *check.C) {
+	utils.InitLoggerForTests(testing.Verbose())
+	s.clock = clockwork.NewRealClock()
+}
+
+// testPack contains pack of
+// services used for test run
+type testPack struct {
 	dataDir      string
 	backend      backend.Backend
 	clock        clockwork.Clock
@@ -50,111 +67,123 @@ type CacheSuite struct {
 	clusterConfigS services.ClusterConfiguration
 }
 
-var _ = check.Suite(&CacheSuite{})
-
-// bootstrap check
-func TestState(t *testing.T) { check.TestingT(t) }
-
-func (s *CacheSuite) SetUpSuite(c *check.C) {
-	utils.InitLoggerForTests(testing.Verbose())
-	s.clock = clockwork.NewRealClock()
+func (t *testPack) Close() {
+	var errors []error
+	if t.backend != nil {
+		errors = append(errors, t.backend.Close())
+	}
+	if t.cache != nil {
+		errors = append(errors, t.cache.Close())
+	}
+	if err := trace.NewAggregate(errors...); err != nil {
+		log.Warningf("Failed to close %v", err)
+	}
 }
 
-func (s *CacheSuite) SetUpTest(c *check.C) {
-	// create a new auth server:
-	s.dataDir = c.MkDir()
+// newPack returns a new test pack or fails the test on error
+func (s *CacheSuite) newPackForAuth(c *check.C) *testPack {
+	return s.newPack(c, ForAuth)
+}
+
+// newPack returns a new test pack or fails the test on error
+func (s *CacheSuite) newPack(c *check.C, setupConfig func(c Config) Config) *testPack {
+	p := &testPack{
+		dataDir: c.MkDir(),
+		clock:   s.clock,
+	}
 	var err error
-	s.backend, err = lite.NewWithConfig(context.TODO(), lite.Config{Path: s.dataDir, PollStreamPeriod: 200 * time.Millisecond})
+	p.backend, err = lite.NewWithConfig(context.TODO(), lite.Config{
+		Path:             p.dataDir,
+		PollStreamPeriod: 200 * time.Millisecond,
+	})
 	c.Assert(err, check.IsNil)
 
 	cacheDir := c.MkDir()
-	s.cacheBackend, err = lite.NewWithConfig(context.TODO(), lite.Config{Path: cacheDir, EventsOff: true})
+	p.cacheBackend, err = lite.NewWithConfig(context.TODO(), lite.Config{Path: cacheDir, EventsOff: true})
 	c.Assert(err, check.IsNil)
 
-	s.eventsC = make(chan CacheEvent, 100)
+	p.eventsC = make(chan CacheEvent, 100)
 	ctx := context.TODO()
 
-	s.trustS = local.NewCAService(s.backend)
-	s.clusterConfigS = local.NewClusterConfigurationService(s.backend)
-	s.provisionerS = local.NewProvisioningService(s.backend)
-	s.eventsS = &proxyEvents{events: local.NewEventsService(s.backend)}
-	s.cache, err = New(Config{
+	p.trustS = local.NewCAService(p.backend)
+	p.clusterConfigS = local.NewClusterConfigurationService(p.backend)
+	p.provisionerS = local.NewProvisioningService(p.backend)
+	p.eventsS = &proxyEvents{events: local.NewEventsService(p.backend)}
+	p.cache, err = New(setupConfig(Config{
 		Context:       ctx,
-		Backend:       s.cacheBackend,
-		Events:        s.eventsS,
-		ClusterConfig: s.clusterConfigS,
-		Provisioner:   s.provisionerS,
-		Trust:         s.trustS,
+		Backend:       p.cacheBackend,
+		Events:        p.eventsS,
+		ClusterConfig: p.clusterConfigS,
+		Provisioner:   p.provisionerS,
+		Trust:         p.trustS,
 		RetryPeriod:   200 * time.Millisecond,
-		EventsC:       s.eventsC,
-	})
+		EventsC:       p.eventsC,
+	}))
 	c.Assert(err, check.IsNil)
-	c.Assert(s.cache, check.NotNil)
+	c.Assert(p.cache, check.NotNil)
 
 	select {
-	case <-s.eventsC:
+	case <-p.eventsC:
 	case <-time.After(time.Second):
 		c.Fatalf("wait for the watcher to start")
 	}
-}
-
-func (s *CacheSuite) TearDownTest(c *check.C) {
-	if s.backend != nil {
-		s.backend.Close()
-	}
-	if s.cache != nil {
-		s.cache.Close()
-	}
+	return p
 }
 
 // TestCA tests certificate authorities
 func (s *CacheSuite) TestCA(c *check.C) {
+	p := s.newPackForAuth(c)
+	defer p.Close()
+
 	ca := suite.NewTestCA(services.UserCA, "example.com")
-	c.Assert(s.trustS.UpsertCertAuthority(ca), check.IsNil)
+	c.Assert(p.trustS.UpsertCertAuthority(ca), check.IsNil)
 
 	select {
-	case <-s.eventsC:
+	case <-p.eventsC:
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	out, err := s.cache.GetCertAuthority(ca.GetID(), true)
+	out, err := p.cache.GetCertAuthority(ca.GetID(), true)
 	c.Assert(err, check.IsNil)
 	ca.SetResourceID(out.GetResourceID())
 	fixtures.DeepCompare(c, ca, out)
 
-	err = s.trustS.DeleteCertAuthority(ca.GetID())
+	err = p.trustS.DeleteCertAuthority(ca.GetID())
 	c.Assert(err, check.IsNil)
 
 	select {
-	case <-s.eventsC:
+	case <-p.eventsC:
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	_, err = s.cache.GetCertAuthority(ca.GetID(), false)
+	_, err = p.cache.GetCertAuthority(ca.GetID(), false)
 	fixtures.ExpectNotFound(c, err)
 }
 
 // TestRecovery tests error recovery scenario
 func (s *CacheSuite) TestRecovery(c *check.C) {
+	p := s.newPackForAuth(c)
+	defer p.Close()
+
 	ca := suite.NewTestCA(services.UserCA, "example.com")
-	c.Assert(s.trustS.UpsertCertAuthority(ca), check.IsNil)
+	c.Assert(p.trustS.UpsertCertAuthority(ca), check.IsNil)
 
 	select {
-	case <-s.eventsC:
+	case <-p.eventsC:
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
 	// event has arrived, now close the watchers
-	watchers := s.eventsS.getWatchers()
+	watchers := p.eventsS.getWatchers()
 	c.Assert(watchers, check.HasLen, 1)
-	s.eventsS.closeWatchers()
+	p.eventsS.closeWatchers()
 
 	// wait for watcher to restart
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, WatcherStarted)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
@@ -162,17 +191,17 @@ func (s *CacheSuite) TestRecovery(c *check.C) {
 
 	// add modification and expect the resource to recover
 	ca2 := suite.NewTestCA(services.UserCA, "example2.com")
-	c.Assert(s.trustS.UpsertCertAuthority(ca2), check.IsNil)
+	c.Assert(p.trustS.UpsertCertAuthority(ca2), check.IsNil)
 
 	// wait for watcher to receive an event
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	out, err := s.cache.GetCertAuthority(ca2.GetID(), false)
+	out, err := p.cache.GetCertAuthority(ca2.GetID(), false)
 	c.Assert(err, check.IsNil)
 	ca2.SetResourceID(out.GetResourceID())
 	services.RemoveCASecrets(ca2)
@@ -181,6 +210,9 @@ func (s *CacheSuite) TestRecovery(c *check.C) {
 
 // TestTokens tests static and dynamic tokens
 func (s *CacheSuite) TestTokens(c *check.C) {
+	p := s.newPackForAuth(c)
+	defer p.Close()
+
 	staticTokens, err := services.NewStaticTokens(services.StaticTokensSpecV2{
 		StaticTokens: []services.ProvisionTokenV1{
 			{
@@ -192,17 +224,17 @@ func (s *CacheSuite) TestTokens(c *check.C) {
 	})
 	c.Assert(err, check.IsNil)
 
-	err = s.clusterConfigS.SetStaticTokens(staticTokens)
+	err = p.clusterConfigS.SetStaticTokens(staticTokens)
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	out, err := s.cache.GetStaticTokens()
+	out, err := p.cache.GetStaticTokens()
 	c.Assert(err, check.IsNil)
 	staticTokens.SetResourceID(out.GetResourceID())
 	fixtures.DeepCompare(c, staticTokens, out)
@@ -211,37 +243,40 @@ func (s *CacheSuite) TestTokens(c *check.C) {
 	token, err := services.NewProvisionToken("token", teleport.Roles{teleport.RoleAuth, teleport.RoleNode}, expires)
 	c.Assert(err, check.IsNil)
 
-	err = s.provisionerS.UpsertToken(token)
+	err = p.provisionerS.UpsertToken(token)
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	tout, err := s.cache.GetToken(token.GetName())
+	tout, err := p.cache.GetToken(token.GetName())
 	c.Assert(err, check.IsNil)
 	token.SetResourceID(tout.GetResourceID())
 	fixtures.DeepCompare(c, token, tout)
 
-	err = s.provisionerS.DeleteToken(token.GetName())
+	err = p.provisionerS.DeleteToken(token.GetName())
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	_, err = s.cache.GetToken(token.GetName())
+	_, err = p.cache.GetToken(token.GetName())
 	fixtures.ExpectNotFound(c, err)
 }
 
 // TestClusterConfig tests cluster configuration
 func (s *CacheSuite) TestClusterConfig(c *check.C) {
+	p := s.newPackForAuth(c)
+	defer p.Close()
+
 	// update cluster config to record at the proxy
 	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
 		SessionRecording: services.RecordAtProxy,
@@ -250,20 +285,20 @@ func (s *CacheSuite) TestClusterConfig(c *check.C) {
 		},
 	})
 	c.Assert(err, check.IsNil)
-	err = s.clusterConfigS.SetClusterConfig(clusterConfig)
+	err = p.clusterConfigS.SetClusterConfig(clusterConfig)
 	c.Assert(err, check.IsNil)
 
-	clusterConfig, err = s.clusterConfigS.GetClusterConfig()
+	clusterConfig, err = p.clusterConfigS.GetClusterConfig()
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	out, err := s.cache.GetClusterConfig()
+	out, err := p.cache.GetClusterConfig()
 	c.Assert(err, check.IsNil)
 	clusterConfig.SetResourceID(out.GetResourceID())
 	fixtures.DeepCompare(c, clusterConfig, out)
@@ -273,14 +308,14 @@ func (s *CacheSuite) TestClusterConfig(c *check.C) {
 		ClusterName: "example.com",
 	})
 	c.Assert(err, check.IsNil)
-	err = s.clusterConfigS.SetClusterName(clusterName)
+	err = p.clusterConfigS.SetClusterName(clusterName)
 	c.Assert(err, check.IsNil)
 
-	clusterName, err = s.clusterConfigS.GetClusterName()
+	clusterName, err = p.clusterConfigS.GetClusterName()
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
@@ -293,6 +328,9 @@ func (s *CacheSuite) TestClusterConfig(c *check.C) {
 
 // TestUsersAndRoles tests users and roles
 func (s *CacheSuite) TestUsersAndRoles(c *check.C) {
+	p := s.newPackForAuth(c)
+	defer p.Close()
+
 	// update cluster config to record at the proxy
 	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
 		SessionRecording: services.RecordAtProxy,
@@ -301,20 +339,20 @@ func (s *CacheSuite) TestUsersAndRoles(c *check.C) {
 		},
 	})
 	c.Assert(err, check.IsNil)
-	err = s.clusterConfigS.SetClusterConfig(clusterConfig)
+	err = p.clusterConfigS.SetClusterConfig(clusterConfig)
 	c.Assert(err, check.IsNil)
 
-	clusterConfig, err = s.clusterConfigS.GetClusterConfig()
+	clusterConfig, err = p.clusterConfigS.GetClusterConfig()
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")
 	}
 
-	out, err := s.cache.GetClusterConfig()
+	out, err := p.cache.GetClusterConfig()
 	c.Assert(err, check.IsNil)
 	clusterConfig.SetResourceID(out.GetResourceID())
 	fixtures.DeepCompare(c, clusterConfig, out)
@@ -324,14 +362,14 @@ func (s *CacheSuite) TestUsersAndRoles(c *check.C) {
 		ClusterName: "example.com",
 	})
 	c.Assert(err, check.IsNil)
-	err = s.clusterConfigS.SetClusterName(clusterName)
+	err = p.clusterConfigS.SetClusterName(clusterName)
 	c.Assert(err, check.IsNil)
 
-	clusterName, err = s.clusterConfigS.GetClusterName()
+	clusterName, err = p.clusterConfigS.GetClusterName()
 	c.Assert(err, check.IsNil)
 
 	select {
-	case event := <-s.eventsC:
+	case event := <-p.eventsC:
 		c.Assert(event.Type, check.Equals, EventProcessed)
 	case <-time.After(time.Second):
 		c.Fatalf("timeout waiting for event")

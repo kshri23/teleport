@@ -31,6 +31,48 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ForAuth sets up watch configuration for the auth server
+func ForAuth(cfg Config) Config {
+	cfg.Watches = []services.WatchKind{
+		{Kind: services.KindCertAuthority, LoadSecrets: true},
+		{Kind: services.KindStaticTokens},
+		{Kind: services.KindToken},
+		{Kind: services.KindClusterName},
+		{Kind: services.KindClusterConfig},
+	}
+	return cfg
+}
+
+// ForProxy sets up watch configuration for proxy
+func ForProxy(cfg Config) Config {
+	cfg.Watches = []services.WatchKind{
+		{Kind: services.KindCertAuthority, LoadSecrets: false},
+		{Kind: services.KindClusterName},
+		{Kind: services.KindClusterConfig},
+		{Kind: services.KindUser},
+		{Kind: services.KindRole},
+		{Kind: services.KindNamespace},
+		{Kind: services.KindNode},
+		{Kind: services.KindProxy},
+		{Kind: services.KindReverseTunnel},
+		{Kind: services.KindTunnelConnection},
+	}
+	return cfg
+}
+
+// ForNode sets up watch configuration for node
+func ForNode(cfg Config) Config {
+	cfg.Watches = []services.WatchKind{
+		{Kind: services.KindCertAuthority, LoadSecrets: false},
+		{Kind: services.KindClusterName},
+		{Kind: services.KindClusterConfig},
+		{Kind: services.KindUser},
+		{Kind: services.KindRole},
+		{Kind: services.KindNamespace},
+	}
+	return cfg
+}
+
 // Cache implements auth.AccessPoint interface and remembers
 // the previously returned upstream value for each API call.
 //
@@ -47,12 +89,16 @@ type Cache struct {
 	usersCache         services.UsersService
 	accessCache        services.Access
 	presenceCache      services.Presence
+	collections        map[string]collection
 }
 
 // Config is Cache config
 type Config struct {
 	// Context is context for parent operations
 	Context context.Context
+	// Watches provides a list of resources
+	// for the cache to watch
+	Watches []services.WatchKind
 	// Events provides events watchers
 	Events services.Events
 	// Trust is a service providing information about certificate
@@ -64,6 +110,10 @@ type Config struct {
 	Provisioner services.Provisioner
 	// Users is a users service
 	Users services.UsersService
+	// Access is an access service
+	Access services.Access
+	// Presence is a presence service
+	Presence services.Presence
 	// Backend is a backend for local cache
 	Backend backend.Backend
 	// RetryPeriod is a period between cache retries on failures
@@ -82,15 +132,6 @@ func (c *Config) CheckAndSetDefaults() error {
 	}
 	if c.Events == nil {
 		return trace.BadParameter("missing Events parameter")
-	}
-	if c.Trust == nil {
-		return trace.BadParameter("missing Trust parameter")
-	}
-	if c.ClusterConfig == nil {
-		return trace.BadParameter("missing ClusterConfig parameter")
-	}
-	if c.Provisioner == nil {
-		return trace.BadParameter("missing Provisioner parameter")
 	}
 	if c.Backend == nil {
 		return trace.BadParameter("missing Backend parameter")
@@ -133,22 +174,24 @@ func New(config Config) (*Cache, error) {
 		trustCache:         local.NewCAService(config.Backend),
 		clusterConfigCache: local.NewClusterConfigurationService(config.Backend),
 		provisionerCache:   local.NewProvisioningService(config.Backend),
+		usersCache:         local.NewIdentityService(config.Backend),
+		accessCache:        local.NewAccessService(config.Backend),
+		presenceCache:      local.NewPresenceService(config.Backend),
 		Entry: log.WithFields(log.Fields{
 			trace.Component: teleport.ComponentCachingClient,
 		}),
 	}
-	err := cs.fetch()
+	collections, err := setupCollections(cs, config.Watches)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	cs.collections = collections
+	err = cs.fetch()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	go cs.update()
 	return cs, nil
-}
-
-// instance is a cache instance,
-type instance struct {
-	parent *Cache
-	services.Trust
 }
 
 func (c *Cache) update() {
@@ -219,23 +262,7 @@ func (c *Cache) notify(event CacheEvent) {
 //   potentially lagging behind the state of the database.
 //
 func (c *Cache) fetchAndWatch() error {
-	watcher, err := c.Events.NewWatcher(c.ctx, services.Watch{
-		Kinds: []services.WatchKind{
-			{Kind: services.KindCertAuthority, LoadSecrets: true},
-			{Kind: services.KindStaticTokens},
-			{Kind: services.KindToken},
-			{Kind: services.KindClusterName},
-			{Kind: services.KindClusterConfig},
-			//
-			{Kind: services.KindUser},
-			{Kind: services.KindRole},
-			{Kind: services.KindNamespace},
-			{Kind: services.KindNode},
-			{Kind: services.KindProxy},
-			{Kind: services.KindReverseTunnel},
-			{Kind: services.KindTunnelConnection},
-		},
-	})
+	watcher, err := c.Events.NewWatcher(c.ctx, services.Watch{Kinds: c.watchKinds()})
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -291,6 +318,14 @@ func (c *Cache) fetchAndWatch() error {
 	}
 }
 
+func (c *Cache) watchKinds() []services.WatchKind {
+	out := make([]services.WatchKind, 0, len(c.collections))
+	for _, collection := range c.collections {
+		out = append(out, collection.watchKind())
+	}
+	return out
+}
+
 // Close closes all outstanding and active cache operations
 func (c *Cache) Close() error {
 	c.cancel()
@@ -298,335 +333,21 @@ func (c *Cache) Close() error {
 }
 
 func (c *Cache) fetch() error {
-	if err := c.updateCertAuthorities(services.HostCA); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateCertAuthorities(services.UserCA); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateStaticTokens(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateTokens(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateClusterConfig(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateClusterName(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateUsers(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateRoles(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateNamespaces(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateNodes(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateProxies(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err = c.updateReverseTunnels(); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.updateTunnelConnections(); err != nil {
-		return trace.Wrap(err)
+	for _, collection := range c.collections {
+		if err := collection.fetch(); err != nil {
+			return trace.Wrap(err)
+		}
 	}
 	return nil
 }
 
 func (c *Cache) processEvent(event services.Event) error {
-	switch event.Type {
-	case backend.OpDelete:
-		switch event.Resource.GetKind() {
-		case services.KindToken:
-			err := c.provisionerCache.DeleteToken(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete provisioning token %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindClusterConfig:
-			err := c.clusterConfigCache.DeleteClusterConfig()
-			if err != nil {
-				c.Warningf("Failed to delete cluster config %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindClusterName:
-			err := c.clusterConfigCache.DeleteClusterName()
-			if err != nil {
-				c.Warningf("Failed to delete cluster name %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindStaticTokens:
-			err := c.clusterConfigCache.DeleteStaticTokens()
-			if err != nil {
-				c.Warningf("Failed to delete static tokens %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindCertAuthority:
-			err := c.trustCache.DeleteCertAuthority(services.CertAuthID{
-				Type:       services.CertAuthType(event.Resource.GetSubKind()),
-				DomainName: event.Resource.GetName(),
-			})
-			if err != nil {
-				c.Warningf("Failed to delete cert authority %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindUser:
-			err := c.usersCache.DeleteUser(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete user %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindRole:
-			err := c.accessCache.DeleteRole(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete role %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindNamespace:
-			err := c.presenceCache.DeleteNamespace(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete namespace %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindNode:
-			err := c.presenceCache.DeleteNode(event.Resource.GetNamespace(), event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete resource %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindProxy:
-			err := c.presenceCache.DeleteProxy(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete resource %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindReverseTunnel:
-			err := c.presenceCache.DeleteReverseTunnel(event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete resource %v.", err)
-				return trace.Wrap(err)
-			}
-		case services.KindTunnelConnection:
-			err := c.presenceCache.DeleteTunnelConnection(event.Resource.GetSubKind(), event.Resource.GetName())
-			if err != nil {
-				c.Warningf("Failed to delete resource %v.", err)
-				return trace.Wrap(err)
-			}
-		default:
-			c.Debugf("Skipping unsupported resource %v", event.Resource.GetKind())
-		}
-	case backend.OpPut:
-		switch resource := event.Resource.(type) {
-		case services.StaticTokens:
-			if err := c.clusterConfigCache.SetStaticTokens(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.ProvisionToken:
-			if err := c.provisionerCache.UpsertToken(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.CertAuthority:
-			if err := c.trustCache.UpsertCertAuthority(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.ClusterConfig:
-			if err := c.clusterConfigCache.SetClusterConfig(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.ClusterName:
-			if err := c.clusterConfigCache.UpsertClusterName(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.User:
-			if err := c.usersCache.UpsertUser(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.Role:
-			if err := c.accessCache.UpsertRole(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.Namespace:
-			if err := c.accessCache.UpsertNamespace(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.Server:
-			switch resource.GetKind() {
-			case services.KindNode:
-				if err := c.presenceCache.UpsertNode(resource); err != nil {
-					return trace.Wrap(err)
-				}
-			case services.KindProxy:
-				if err := c.presenceCache.UpsertProxy(resource); err != nil {
-					return trace.Wrap(err)
-				}
-			default:
-				c.Warningf("Skipping unsupported resource %v.", event.Resource.GetKind())
-			}
-		case services.ReverseTunnel:
-			if err := c.presenceCache.UpsertReverseTunnel(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		case services.TunnelConnection:
-			if err := c.presenceCache.UpsertTunnelConnection(resource); err != nil {
-				return trace.Wrap(err)
-			}
-		default:
-			c.Warningf("Skipping unsupported resource %v.", event.Resource.GetKind())
-		}
-	default:
-		c.Warningf("Skipping unsupported event type %v.", event.Type)
-	}
-	return nil
-}
-
-func (c *Cache) updateCertAuthorities(caType services.CertAuthType) error {
-	authorities, err := c.Trust.GetCertAuthorities(caType, true, services.SkipValidation())
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.trustCache.DeleteAllCertAuthorities(caType); err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-	}
-	for _, ca := range authorities {
-		if err := c.trustCache.UpsertCertAuthority(ca); err != nil {
-			return trace.Wrap(err)
-		}
-	}
-	return nil
-}
-
-func (c *Cache) updateStaticTokens() error {
-	staticTokens, err := c.ClusterConfig.GetStaticTokens()
-	if err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-		err := c.clusterConfigCache.DeleteStaticTokens()
-		if err != nil {
-			if !trace.IsNotFound(err) {
-				return trace.Wrap(err)
-			}
-		}
+	collection, ok := c.collections[event.Resource.GetKind()]
+	if !ok {
+		c.Warningf("Skipping unsupported event %v.", event.Resource.GetKind())
 		return nil
 	}
-	err = c.clusterConfigCache.SetStaticTokens(staticTokens)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	return nil
-}
-
-func (c *Cache) updateTokens() error {
-	tokens, err := c.Provisioner.GetTokens()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.provisionerCache.DeleteAllTokens(); err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-	}
-	for _, token := range tokens {
-		if err := c.provisionerCache.UpsertToken(token); err != nil {
-			return trace.Wrap(err)
-		}
-	}
-	return nil
-}
-
-func (c *Cache) updateClusterConfig() error {
-	clusterConfig, err := c.ClusterConfig.GetClusterConfig()
-	if err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-		err := c.clusterConfigCache.DeleteClusterConfig()
-		if err != nil {
-			if !trace.IsNotFound(err) {
-				return trace.Wrap(err)
-			}
-		}
-		return nil
-	}
-	if err := c.clusterConfigCache.SetClusterConfig(clusterConfig); err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-	}
-	return nil
-}
-
-func (c *Cache) updateClusterName() error {
-	clusterName, err := c.ClusterConfig.GetClusterName()
-	if err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-		err := c.clusterConfigCache.DeleteClusterName()
-		if err != nil {
-			if !trace.IsNotFound(err) {
-				return trace.Wrap(err)
-			}
-		}
-		return nil
-	}
-	if err := c.clusterConfigCache.UpsertClusterName(clusterName); err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-	}
-	return nil
-}
-
-func (c *Cache) updateUsers() error {
-	values, err := c.Users.GetUsers()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	if err := c.provisionerCache.DeleteAllUsers(); err != nil {
-		if !trace.IsNotFound(err) {
-			return trace.Wrap(err)
-		}
-	}
-	for _, token := range tokens {
-		if err := c.provisionerCache.UpsertToken(token); err != nil {
-			return trace.Wrap(err)
-		}
-	}
-	return nil
-}
-
-func (c *Cache) updateRoles() error {
-	return trace.Wrap(err)
-}
-
-func (c *Cache) updateNamespaces() error {
-	return trace.Wrap(err)
-}
-
-func (c *Cache) updateNodes() error {
-	return trace.Wrap(err)
-}
-
-func (c *Cache) updateProxies() error {
-	return trace.Wrap(err)
-}
-
-func (c *Cache) updateReverseTunnels() error {
-	return trace.Wrap(err)
-}
-
-func (c *Cache) updateTunnelConnections() error {
-	return trace.Wrap(err)
+	return collection.processEvent(event)
 }
 
 // GetCertAuthority returns certificate authority by given id. Parameter loadSigningKeys
@@ -664,4 +385,63 @@ func (c *Cache) GetClusterConfig(opts ...services.MarshalOption) (services.Clust
 // GetClusterName gets the name of the cluster from the backend.
 func (c *Cache) GetClusterName(opts ...services.MarshalOption) (services.ClusterName, error) {
 	return c.clusterConfigCache.GetClusterName(opts...)
+}
+
+// GetRoles is a part of auth.AccessPoint implementation
+func (c *Cache) GetRoles() ([]services.Role, error) {
+	return c.accessCache.GetRoles()
+}
+
+// GetRole is a part of auth.AccessPoint implementation
+func (c *Cache) GetRole(name string) (services.Role, error) {
+	return c.accessCache.GetRole(name)
+}
+
+// GetNamespace returns namespace
+func (c *Cache) GetNamespace(name string) (*services.Namespace, error) {
+	return c.presenceCache.GetNamespace(name)
+}
+
+// GetNamespaces is a part of auth.AccessPoint implementation
+func (c *Cache) GetNamespaces() ([]services.Namespace, error) {
+	return c.presenceCache.GetNamespaces()
+}
+
+// GetNodes is a part of auth.AccessPoint implementation
+func (c *Cache) GetNodes(namespace string, opts ...services.MarshalOption) ([]services.Server, error) {
+	return c.presenceCache.GetNodes(namespace, opts...)
+}
+
+// GetProxies is a part of auth.AccessPoint implementation
+func (c *Cache) GetReverseTunnels() ([]services.ReverseTunnel, error) {
+	return c.presenceCache.GetReverseTunnels()
+}
+
+// GetProxies is a part of auth.AccessPoint implementation
+func (c *Cache) GetProxies() ([]services.Server, error) {
+	return c.presenceCache.GetProxies()
+}
+
+// GetUser is a part of auth.AccessPoint implementation.
+func (c *Cache) GetUser(name string) (user services.User, err error) {
+	return c.usersCache.GetUser(name)
+}
+
+// GetUsers is a part of auth.AccessPoint implementation
+func (c *Cache) GetUsers() (users []services.User, err error) {
+	return c.usersCache.GetUsers()
+}
+
+// GetTunnelConnections is a part of auth.AccessPoint implementation
+// GetTunnelConnections are not using recent cache as they are designed
+// to be called periodically and always return fresh data
+func (c *Cache) GetTunnelConnections(clusterName string, opts ...services.MarshalOption) ([]services.TunnelConnection, error) {
+	return c.presenceCache.GetTunnelConnections(clusterName, opts...)
+}
+
+// GetAllTunnelConnections is a part of auth.AccessPoint implementation
+// GetAllTunnelConnections are not using recent cache, as they are designed
+// to be called periodically and always return fresh data
+func (c *Cache) GetAllTunnelConnections(opts ...services.MarshalOption) (conns []services.TunnelConnection, err error) {
+	return c.presenceCache.GetAllTunnelConnections(opts...)
 }
