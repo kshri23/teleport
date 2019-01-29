@@ -47,7 +47,7 @@ type Flags struct {
 	Source bool
 	// Sink indicates receive mode
 	Sink bool
-	//  Verbose sets a logging mode
+	// Verbose sets a logging mode
 	Verbose bool
 	// Target sets targeted files to be transferred
 	Target []string
@@ -57,6 +57,8 @@ type Flags struct {
 	RemoteAddr string
 	// LocalAddr is a local host address
 	LocalAddr string
+	// DirectoryMode indicates that a directory is being sent.
+	DirectoryMode bool
 }
 
 // Config describes Command configuration settings
@@ -349,6 +351,22 @@ func (cmd *command) sendFile(r *reader, ch io.ReadWriter, fileInfo FileInfo) err
 // serveSink executes file uploading, when a remote server sends file(s)
 // via scp
 func (cmd *command) serveSink(ch io.ReadWriter) error {
+	// Validate that if directory mode flag was sent, the target is an actual
+	// directory.
+	if cmd.Flags.DirectoryMode {
+		if len(cmd.Flags.Target) != 1 {
+			return trace.BadParameter("invalid number of targets")
+		}
+
+		fi, err := os.Stat(cmd.Flags.Target[0])
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		if mode := fi.Mode(); !mode.IsDir() {
+			return trace.BadParameter("not a directory")
+		}
+	}
+
 	if err := sendOK(ch); err != nil {
 		return trace.Wrap(err)
 	}
